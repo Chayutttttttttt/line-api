@@ -159,8 +159,6 @@ def get_genai_response(user_msg: str, file_id: str = None) -> str:
         print(f"เกิดข้อผิดพลาดจาก Gemini API: {e}")
         return "เกิดข้อผิดพลาดในการเชื่อมต่อกับระบบ AI"
     
-    
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app,port=port,host="0.0.0.0")
