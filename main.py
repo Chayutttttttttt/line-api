@@ -116,7 +116,7 @@ def get_genai_response(user_msg: str, file_id: str = None) -> str:
 
     config = types.GenerateContentConfig(
         system_instruction="คุณคือผู้เชี้ยวชาญด้านการศึกษาเเละการให้ข้อมูลที่ถูกต้อง คุณต้องวิเคราะให้เป็นกันเองอ่านง่าย",
-        tools=[types.Tool(google_search=types.GoogleSearch())],
+        tools=[types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())],
         temperature=0.3,
     )
 
