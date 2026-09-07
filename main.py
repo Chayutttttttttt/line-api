@@ -113,8 +113,15 @@ def get_genai_response(user_msg: str, file_id: str = None) -> str:
             - ให้ตอบกลับมาเป็นข้อความตัวอักษรธรรมดา (Plain Text) เท่านั้น
             - เอาเฉพาะส่วนเนื้อหาที่เป็นคำตอบโดยตรง ไม่ต้องมีคำเกริ่นนำหรือคำลงท้าย
             - เว้นบรรทัดประโยคต่อประโยค'''
+
+    config = types.GenerateContentConfig(
+        system_instruction="คุณคือผู้เชี้ยวชาญด้านการศึกษาเเละการให้ข้อมูลที่ถูกต้อง คุณต้องวิเคราะให้เป็นกันเองอ่านง่าย",
+        tools=[types.Tool(google_search=types.GoogleSearch())]
+        temperature=0.3,
+    )
+
     client = genai.Client(api_key=gemini_api_key)
-    
+
     contents_payload = [prompt]
     
     if file_id:
@@ -149,8 +156,10 @@ def get_genai_response(user_msg: str, file_id: str = None) -> str:
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=contents_payload
+            contents=contents_payload,
+            config=config
         )
+        
         if response.text:
             return response.text.strip()
         else:
