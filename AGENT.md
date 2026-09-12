@@ -1,0 +1,11 @@
+# Important
+- Do not modify generated files
+- Keep components small
+- Reuse existing components before creating new ones
+- If multiple related pieces of code can reasonably be combined into a single file, combine them into one file by default.
+- Do not split code into multiple files unless separation is necessary for maintainability, framework requirements, reuse, or clear architectural reasons.
+- Prefer the simplest file structure that keeps the code readable and functional.
+- After complete 
+- After completing the latest user prompt, always write or update a PREVIEW.md file.
+- PREVIEW.md should contain a concise preview of what was completed in the latest prompt, including the main changes, affected files, and any important usage notes.
+- Update PREVIEW.md every time a prompt that changes or creates project files is completed.
