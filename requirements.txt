@@ -6,3 +6,4 @@ google-genai==2.23.0
 python-dotenv==1.2.3
 line-bot-sdk==3.25.0
 sqlmodel==0.0.42
+psycopg2-binary
