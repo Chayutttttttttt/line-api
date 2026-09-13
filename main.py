@@ -7,7 +7,6 @@ from fastapi import FastAPI
 
 from components.line import router as line_router
 from config import PORT
-from db.database import create_db_and_tables
 
 
 @asynccontextmanager
