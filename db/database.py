@@ -5,7 +5,7 @@ from db import models  # Register all table models before create_all runs.
 
 engine = create_engine(
     DATABASE_URL,
-    echo=True
+    echo=False
 )
 
 def create_db_and_tables():
