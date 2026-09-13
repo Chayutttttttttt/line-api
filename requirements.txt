@@ -8,3 +8,4 @@ line-bot-sdk==3.25.0
 sqlmodel==0.0.42
 psycopg2-binary
 pgvector
+alembic
