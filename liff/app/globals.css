@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: #F7F9FC;
+  --foreground: #172033;
+  --navy-700: #293681;
+  --blue-500: #4274D9;
+  --sky-300: #95CCDD;
+  --mint-100: #D0E7E6;
+  --surface: #FFFFFF;
+  --surface-soft: #F0F6F8;
+  --text-secondary: #657086;
+  --border: #E4E9F0;
+  --danger: #D84A4A;
+  --app-font-sans: "Google Sans", "Google Sans Text", "Noto Sans Thai",
+    "Noto Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-brand-navy: var(--navy-700);
+  --color-brand-blue: var(--blue-500);
+  --color-brand-sky: var(--sky-300);
+  --color-brand-mint: var(--mint-100);
+  --color-surface: var(--surface);
+  --color-surface-soft: var(--surface-soft);
+  --color-secondary: var(--text-secondary);
+  --color-border: var(--border);
+  --color-danger: var(--danger);
+  --font-sans: var(--app-font-sans);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--app-font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button, input, textarea, select {
+  font-family: inherit;
+}
+
+button, a {
+  -webkit-tap-highlight-color: transparent;
+}
