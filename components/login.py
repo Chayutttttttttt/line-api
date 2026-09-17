@@ -5,10 +5,8 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-
 class Request(BaseModel):
     id_token: str = Field(min_length=1)
-
 
 @router.post("/line")
 async def line_login(data: Request, res: Response):
