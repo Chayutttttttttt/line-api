@@ -2,15 +2,33 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { IoCheckmarkCircleOutline, IoLogIn, IoReloadOutline } from "react-icons/io5";
-import { initliff, isLineLoggedIn, loginWithLine } from "@/lib/liff";
+import { getLineIdToken, initliff, isLineLoggedIn, loginWithLine } from "@/lib/liff";
 
 const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
+const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+
+async function sendIdToken() {
+  const idToken = getLineIdToken();
+  if (!idToken || !apiUrl) throw new Error("LINE token or API URL is missing");
+
+  const response = await fetch(`${apiUrl.replace(/\/+$/, "")}/auth/line`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: idToken }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) throw new Error("Could not send LINE token");
+  const result = await response.json();
+  if (result.received !== true) throw new Error("API did not acknowledge LINE token");
+}
 
 export default function LineLoginButton() {
   const [status, setStatus] = useState<"idle" | "checking" | "loading" | "success" | "error">(
     liffId ? "checking" : "idle",
   );
   const requestPending = useRef(false);
+  const initialCheck = useRef<Promise<"success" | "idle"> | null>(null);
   const messageId = useId();
   const isBusy = status === "checking" || status === "loading";
 
@@ -18,9 +36,16 @@ export default function LineLoginButton() {
     if (!liffId) return;
     let cancelled = false;
 
-    initliff().then(
-      () => {
-        if (!cancelled) setStatus(isLineLoggedIn() ? "success" : "idle");
+    // Reuse this check during React Strict Mode's effect replay.
+    initialCheck.current ??= initliff().then(async () => {
+      if (!isLineLoggedIn()) return "idle";
+      await sendIdToken();
+      return "success";
+    });
+
+    initialCheck.current.then(
+      (nextStatus) => {
+        if (!cancelled) setStatus(nextStatus);
       },
       () => {
         if (!cancelled) setStatus("error");
@@ -43,20 +68,21 @@ export default function LineLoginButton() {
     try {
       await initliff();
       if (isLineLoggedIn()) {
+        await sendIdToken();
         setStatus("success");
-        requestPending.current = false;
       } else {
         loginWithLine();
       }
     } catch {
-      requestPending.current = false;
       setStatus("error");
+    } finally {
+      requestPending.current = false;
     }
   }
 
   const label = status === "checking" ? "กำลังตรวจสอบบัญชี…"
     : status === "loading" ? "กำลังเข้าสู่ระบบ…"
-    : status === "success" ? "เชื่อมต่อกับ LINE แล้ว"
+    : status === "success" ? "ส่งข้อมูล LINE สำเร็จ"
     : status === "error" ? "ลองเข้าสู่ระบบอีกครั้ง"
     : "เข้าสู่ระบบด้วย LINE";
 
@@ -83,7 +109,7 @@ export default function LineLoginButton() {
       {status === "error" ? (
         <p id={messageId} role="alert" className="mt-3 rounded-xl border border-danger/25 bg-[#FFF5F5] p-3 text-sm leading-relaxed text-[#A52D2D]">
           {liffId
-            ? "เชื่อมต่อ LINE ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง"
+            ? "เชื่อมต่อ LINE หรือส่งข้อมูลไม่สำเร็จ กรุณาลองอีกครั้ง"
             : "ขณะนี้ยังไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่ภายหลังหรือติดต่อผู้ดูแล"}
         </p>
       ) : null}
