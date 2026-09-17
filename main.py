@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from components.line import router as line_router
+from components.login import router as auth_router
 from config import PORT
 
 
@@ -16,6 +17,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(line_router)
+app.include_router(auth_router)
 
 
 if __name__ == "__main__":

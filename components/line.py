@@ -34,7 +34,6 @@ async def get_json(request: Request, x_line_signature: str = Header(None)):
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     if event.type == "message":
