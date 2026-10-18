@@ -1,16 +1,109 @@
-"""Receive a LIFF ID token for the temporary login connection test."""
+"""Verify LINE ID tokens and issue revocable, hashed bearer sessions."""
+from datetime import timedelta
+import hashlib
+import secrets
+from uuid import UUID
 
-from fastapi import APIRouter, Response
+import requests
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+from sqlmodel import Session, select
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+from config import LINE_LOGIN_CHANNEL_ID, LINE_PROVIDER_ID, SESSION_TTL_SECONDS
+from db.database import get_session
+from db.models import AuthSession, Course, CourseMembership, LineIdentity, SchoolMembership, User, utc_now
 
-class Request(BaseModel):
-    id_token: str = Field(min_length=1)
+router = APIRouter(tags=["auth"])
 
-@router.post("/line")
-async def line_login(data: Request, res: Response):
-    id_token = data
-    # Temporary debugging only: this does not verify the token or create a session.
-    print(id_token, res, flush=True)
-    return {"received": True}
+
+class LoginRequest(BaseModel):
+    id_token: str = Field(min_length=1, max_length=8192)
+
+
+def current_user(authorization: str | None = Header(None), db: Session = Depends(get_session)) -> User:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "UNAUTHENTICATED")
+    digest = hashlib.sha256(authorization[7:].encode()).hexdigest()
+    auth = db.get(AuthSession, digest)
+    if not auth or auth.expires_at <= utc_now():
+        raise HTTPException(401, "SESSION_EXPIRED")
+    user = db.get(User, auth.user_id)
+    if not user or user.status != "active":
+        raise HTTPException(403, "ACCOUNT_INACTIVE")
+    return user
+
+
+def course_access(db: Session, user: User, course_id: UUID, teacher: bool = False) -> Course:
+    course = db.get(Course, course_id)
+    if not course:
+        raise HTTPException(404, "COURSE_NOT_FOUND")
+    cm = db.exec(select(CourseMembership).where(CourseMembership.course_id == course_id,
+        CourseMembership.user_id == user.id, CourseMembership.status == "active")).first()
+    sm = db.exec(select(SchoolMembership).where(SchoolMembership.school_id == course.school_id,
+        SchoolMembership.user_id == user.id, SchoolMembership.status == "active")).first()
+    if not cm or not sm or cm.school_id != course.school_id:
+        raise HTTPException(403, "COURSE_FORBIDDEN")
+    if teacher and (cm.role not in {"teacher", "admin"} or sm.role not in {"teacher", "admin"}):
+        raise HTTPException(403, "TEACHER_REQUIRED")
+    return course
+
+
+@router.post("/auth/line")
+def line_login(data: LoginRequest, db: Session = Depends(get_session)):
+    if not LINE_LOGIN_CHANNEL_ID or not LINE_PROVIDER_ID:
+        raise HTTPException(503, "LINE_LOGIN_NOT_CONFIGURED")
+    try:
+        response = requests.post("https://api.line.me/oauth2/v2.1/verify",
+            data={"id_token": data.id_token, "client_id": LINE_LOGIN_CHANNEL_ID}, timeout=10)
+        if response.status_code != 200:
+            raise HTTPException(401, "INVALID_LINE_TOKEN")
+        claims = response.json()
+        if (claims.get("iss") != "https://access.line.me" or
+            str(claims.get("aud")) != LINE_LOGIN_CHANNEL_ID or
+            not isinstance(claims.get("exp"), (int, float)) or
+            claims["exp"] <= utc_now().timestamp() or not claims.get("sub")):
+            raise HTTPException(401, "INVALID_LINE_TOKEN")
+    except (requests.RequestException, ValueError):
+        raise HTTPException(503, "LINE_TEMPORARILY_UNAVAILABLE") from None
+    # Serialize first login for this identity without exposing tokens in logs.
+    from sqlalchemy import text
+    identity_key = f"{LINE_PROVIDER_ID}:{claims['sub']}"
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": identity_key})
+    identity = db.exec(select(LineIdentity).where(LineIdentity.provider_id == LINE_PROVIDER_ID,
+        LineIdentity.line_sub == claims["sub"])).first()
+    if identity:
+        user = db.get(User, identity.user_id)
+    else:
+        user = User(display_name=str(claims.get("name", ""))[:255])
+        db.add(user)
+        db.flush()
+        db.add(LineIdentity(user_id=user.id, provider_id=LINE_PROVIDER_ID, line_sub=claims["sub"]))
+    if user.status != "active":
+        raise HTTPException(403, "ACCOUNT_INACTIVE")
+    token = secrets.token_urlsafe(48)
+    db.add(AuthSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
+        expires_at=utc_now() + timedelta(seconds=SESSION_TTL_SECONDS)))
+    db.commit()
+    return {"received": True, "access_token": token, "token_type": "bearer", "expires_in": SESSION_TTL_SECONDS}
+
+
+@router.get("/me")
+def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
+    memberships = db.exec(select(CourseMembership).where(CourseMembership.user_id == user.id,
+        CourseMembership.status == "active")).all()
+    courses = []
+    for membership in memberships:
+        try:
+            course = course_access(db, user, membership.course_id)
+        except HTTPException:
+            continue
+        courses.append({"id": course.id, "title": course.title, "role": membership.role})
+    return {"id": user.id, "display_name": user.display_name, "timezone": user.timezone, "courses": courses}
+
+
+@router.post("/auth/logout")
+def logout(user: User = Depends(current_user), authorization: str = Header(), db: Session = Depends(get_session)):
+    auth = db.get(AuthSession, hashlib.sha256(authorization[7:].encode()).hexdigest())
+    db.delete(auth)
+    db.commit()
+    return {"logged_out": True}

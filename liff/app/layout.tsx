@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "เข้าสู่ระบบ | LINE",
-  description: "เข้าสู่ระบบด้วยบัญชี LINE เพื่อเชื่อมต่อและเริ่มใช้งาน",
+  title: "ผู้ช่วยคณิตศาสตร์ | LINE",
+  description: "เรียนและฝึกคณิตศาสตร์จากเอกสารที่ครูอนุมัติ พร้อมหลักฐานตรวจรับก่อนนำร่อง",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -2,26 +2,11 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { IoCheckmarkCircleOutline, IoLogIn, IoReloadOutline } from "react-icons/io5";
-import { getLineIdToken, initliff, isLineLoggedIn, loginWithLine } from "@/lib/liff";
+import { initliff, isLineLoggedIn, loginWithLine } from "@/lib/liff";
 
 const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
-const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-async function sendIdToken() {
-  const idToken = getLineIdToken();
-  if (!idToken || !apiUrl) throw new Error("LINE token or API URL is missing");
-
-  const response = await fetch(`${apiUrl.replace(/\/+$/, "")}/auth/line`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id_token: idToken }),
-    signal: AbortSignal.timeout(15000),
-  });
-
-  if (!response.ok) throw new Error("Could not send LINE token");
-  const result = await response.json();
-  if (result.received !== true) throw new Error("API did not acknowledge LINE token");
-}
+import { verifyLineLogin } from "@/lib/api";
+import Link from "next/link";
 
 export default function LineLoginButton() {
   const [status, setStatus] = useState<"idle" | "checking" | "loading" | "success" | "error">(
@@ -39,7 +24,7 @@ export default function LineLoginButton() {
     // Reuse this check during React Strict Mode's effect replay.
     initialCheck.current ??= initliff().then(async () => {
       if (!isLineLoggedIn()) return "idle";
-      await sendIdToken();
+      await verifyLineLogin();
       return "success";
     });
 
@@ -68,7 +53,7 @@ export default function LineLoginButton() {
     try {
       await initliff();
       if (isLineLoggedIn()) {
-        await sendIdToken();
+        await verifyLineLogin();
         setStatus("success");
       } else {
         loginWithLine();
@@ -82,7 +67,7 @@ export default function LineLoginButton() {
 
   const label = status === "checking" ? "กำลังตรวจสอบบัญชี…"
     : status === "loading" ? "กำลังเข้าสู่ระบบ…"
-    : status === "success" ? "ส่งข้อมูล LINE สำเร็จ"
+    : status === "success" ? "ยืนยันบัญชี LINE สำเร็จ"
     : status === "error" ? "ลองเข้าสู่ระบบอีกครั้ง"
     : "เข้าสู่ระบบด้วย LINE";
 
@@ -105,6 +90,7 @@ export default function LineLoginButton() {
         )}
         <span>{label}</span>
       </button>
+      {status === "success" && <Link href="/" className="mt-4 block text-center font-semibold text-brand-blue underline">เปิดผู้ช่วยคณิตศาสตร์</Link>}
       <p className="sr-only" role="status">{label}</p>
       {status === "error" ? (
         <p id={messageId} role="alert" className="mt-3 rounded-xl border border-danger/25 bg-[#FFF5F5] p-3 text-sm leading-relaxed text-[#A52D2D]">

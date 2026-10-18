@@ -1,38 +1,48 @@
-# Preview: อธิบายส่วนที่จำสถานะ Login
+# Preview เตรียมทดสอบจริงผ่าน LINE
 
-- อธิบาย `liff/lib/liff.ts`: `liff.init()` เตรียม SDK, `liff.isLoggedIn()` อ่านสถานะ Login ที่ SDK จัดการ และ `initialization` เก็บ promise เพื่อไม่ init ซ้ำในหน่วยความจำ
-- อธิบาย `liff/components/lineloginButton.tsx`: effect ตรวจสถานะหลัง init แล้วส่ง token; `status` เก็บสถานะหน้าจอ, `initialCheck` ป้องกันงานเริ่มต้นซ้ำ และ `requestPending` ป้องกันคลิกซ้ำ
-- เมื่อ reload หน้า React state/ref เริ่มใหม่ แล้วตรวจสถานะจาก LIFF อีกครั้ง หากยังล็อกอินจะส่ง token ไป Backend ใหม่
-- Backend ใน `components/login.py` ยังรับและ print ข้อมูลแล้วตอบ `received: true` เท่านั้น ไม่มีการ verify token, บันทึกผู้ใช้ หรือสร้าง session/cookie
-- งานรอบนี้แก้เฉพาะ `PREVIEW.md` ไม่แก้โค้ดแอป และไม่รันการทดสอบซ้ำเพราะเป็นการอธิบายโค้ด
-# Preview: ต่อ LIFF Login เข้ากับ Backend เพื่อทดสอบรับ token
+งานล่าสุดวันที่ 18 ตุลาคม 2569: ตรวจการตั้งค่าในโค้ดและเอกสาร LINE Developers เพื่ออธิบายขั้นตอนทดสอบด้วยบัญชีจริง
 
-## สิ่งที่เปลี่ยน
+- เตรียม LINE OA/Messaging API กับ LINE Login ภายใต้ Provider เดียวกัน ตั้ง LIFF HTTPS endpoint, scope openid/profile และสิทธิ์ Tester เมื่อ channel ยัง Developing
+- ตั้ง webhook เป็น HTTPS API `/webhooks/line` กด Verify เปิด Use webhook และ Webhook redelivery แล้วจับคู่ channel IDs, secret, access token, LIFF ID และ CORS กับ environment ของระบบ
+- API, worker, PostgreSQL และ private Bucket ต้องพร้อมใช้งาน ให้บัญชีทดสอบเพิ่มเพื่อน OA และ Login ใน LIFF ก่อน ผู้ดูแลจึงเพิ่มสมาชิกวิชา สำหรับแชต LINE รุ่นนี้เริ่มด้วยหนึ่งวิชาต่อบัญชี
+- เตรียมเอกสาร/โจทย์ที่ครูตรวจ เปิด AI หลังทดสอบข้อมูลและสิทธิ์ แล้วเก็บผลจริงกับรหัสงานและหลักฐานส่งข้อความ
+- รอบนี้ไม่เปลี่ยนโค้ดหรือการตั้งค่าบริการจริง แก้เฉพาะ `PREVIEW.md` ตามคำสั่งโครงการ ไม่รันทดสอบซ้ำเพราะเป็นการให้คำแนะนำ
 
-- `liff/components/lineloginButton.tsx`: ใช้ `getLineIdToken()` เดิม ส่ง POST JSON ไป `${NEXT_PUBLIC_API_URL}/auth/line` หลัง init และ login สำเร็จ รวมตอนกลับจาก LINE redirect
-- แสดงสำเร็จเมื่อ API ตอบ `received: true` เท่านั้น รองรับ error/retry และ timeout 15 วินาที ป้องกัน POST ซ้ำจาก Strict Mode effect replay
-- `components/login.py`: รับ token ที่ไม่เป็นสตริงว่าง, `print(id_token, response, flush=True)` และตอบ `{"received": true}` โดยไม่ส่ง token กลับ
-- `config.py` และ `main.py`: เพิ่ม CORS สำหรับ POST JSON ตั้ง origins ได้ด้วย `CORS_ORIGINS` ใน `.env` ฝั่ง Backend
-- `PREVIEW.md` และ `liff/PREVIEW.md`: อัปเดตสรุปและวิธีทดสอบ
+## รายละเอียดงานพัฒนาก่อนหน้า
 
-## วิธีใช้งาน
+# Preview พัฒนาระบบเตรียมตรวจรับตาม roadmap
 
-1. รัน Backend จาก root: `.venv/bin/python main.py`
-2. Frontend ใช้ `NEXT_PUBLIC_LIFF_ID` และ `NEXT_PUBLIC_API_URL` ที่ตั้งไว้แล้วในไฟล์ env ของ `liff/` (ปัจจุบัน API เป็น `http://localhost:8000`)
-3. รัน Frontend: `npm --prefix liff run dev` แล้วเปิด `/login` บน URL ที่ตั้งไว้ใน LINE Developers หากตั้งเป็น HTTPS localhost ให้ใช้ `npm --prefix liff run dev -- --experimental-https`
-4. กดเข้าสู่ระบบด้วย LINE เมื่อกลับมายังเว็บจะส่ง token อัตโนมัติ ถ้าล็อกอินอยู่แล้วจะส่งทันทีหลัง init
-5. ดู token และ Response object ใน terminal ของ Python ส่วนหน้าเว็บแสดง “ส่งข้อมูล LINE สำเร็จ”
+งานล่าสุดวันที่ 18 ตุลาคม 2569: ต่อระบบเดิมเป็นเส้นทางเตรียมตรวจรับก่อนนำร่อง โดยใช้ Railway รัน API/worker และ PostgreSQL พร้อม private S3 storage สำหรับ Bucket ที่แสดงชื่อ `adaptable-folder` ในโปรเจกต์ที่ผู้ใช้ระบุ
 
-CORS ค่าเริ่มต้นรองรับ `http://localhost:3000`, `https://localhost:3000` และ `127.0.0.1` ทั้งสอง protocol หากใช้โดเมนหรือพอร์ตอื่น ให้กำหนด origin จริง เช่น `CORS_ORIGINS=https://your-frontend.example` (หลาย origin คั่นด้วย comma, ไม่มี path) แล้ว restart Backend
+## การเปลี่ยนแปลงหลัก
 
-หากทดสอบบนมือถือ `localhost` จะหมายถึงมือถือ ให้ใช้ API URL ที่มือถือเข้าถึงได้ และใช้ HTTPS API สำหรับเว็บ HTTPS จากนั้น restart/rebuild Frontend เมื่อเปลี่ยน `NEXT_PUBLIC_API_URL`
+- LINE Login ตรวจ ID token จริงก่อนออก bearer session แบบเก็บ hash ไม่ print token ตรวจสมาชิกโรงเรียน/รายวิชาฝั่ง server
+- Webhook ตรวจ HMAC จาก raw body บันทึก event/job ในธุรกรรมเดียว กัน event ซ้ำ และแยกงาน AI ไป SQL worker มี lease, retry, fencing, ลำดับรายผู้ใช้ และ outbox ที่ใช้ LINE retry key เดิม
+- คลังไฟล์ PDF/DOCX/TXT มี checksum รุ่นเอกสาร ข้อความ/เลขหน้าที่ครูตรวจ และประวัติผลตรวจ แยก `teaching` จาก `evidence` อนุมัติต้นแบบยังไม่เปิดให้นักเรียน การอนุมัติเนื้อหาใช้ rubric Word 0–2 แยกจากการประเมิน AI 0–3
+- เพิ่ม exact lexical retrieval เฉพาะแหล่งเผยแพร่ Gemini adapter ตรวจ schema/citation แบบฝึกเซตจำนวนเต็มและการเป็นฟังก์ชัน งาน idempotency/revision แผนสอบแบบ draft/activate การเตือน opt-in/เวลาเงียบ และความก้าวหน้าแยกทำเองกับใช้คำใบ้
+- LIFF มีหน้าเรียน ฝึก งาน แผน เอกสาร ตั้งค่า และหน้าครูจัดไฟล์/ตรวจรับ เพิ่มทะเบียนหลักฐาน T01–T12 และ catalog AI 80 กรณี ส่งออก JSON พร้อมรุ่น checksum ผู้ตรวจ คะแนน และรายการที่ยังไม่ผ่าน ไม่สร้างผลผ่านแทนครู
+- เพิ่ม CLI จัดโรงเรียน/สมาชิก นำเข้าไฟล์ ส่งออก deletion ledger และบังคับรายการลบซ้ำหลัง restore พร้อม Docker/API/LIFF และคู่มือติดตั้ง Railway
 
-นี่เป็นขั้นตอนทดสอบการส่ง token เท่านั้น ยังไม่มีการ verify token หรือสร้าง session; `response` ที่ print เป็น FastAPI Response object การ print token เต็มเป็นโค้ด debug ชั่วคราว
+## ไฟล์ที่ได้รับผล
 
-## การตรวจสอบ
+- Backend: `main.py`, `config.py`, `components/login.py`, `components/line.py`, `components/documents.py`, `components/learning.py`, `components/acceptance.py`, `components/grading.py`, `components/storage.py`, `agent/gemini.py`, `worker/`, `manage.py`
+- SQL: `db/models.py`, `db/database.py`, `db/migrate.py`, migration ใหม่ `alembic/versions/20261018_acceptance_workflow.py` ไม่แก้ migration generated เดิม
+- LIFF: `liff/app/page.tsx`, `layout.tsx`, `globals.css`, `components/dashboard.tsx`, `teacherPanel.tsx`, `lineloginButton.tsx`, `lib/api.ts`, `next.config.ts`
+- ตั้งค่าและคู่มือ: Dockerfiles, `.dockerignore`, `.env.example`, `railway.toml`, requirements, `README.md`, `OPERATIONS.md`, `liff/README.md`, `liff/.gitignore`, `tests/` และไฟล์นี้ ไม่แก้ dependency lock เดิมหรือเอกสารต้นฉบับที่แนบ
 
-- TypeScript: `tsc --noEmit --incremental false` ผ่าน
-- ESLint เฉพาะ component ที่แก้ผ่าน
-- HTTP ผ่าน ASGI transport กับแอปจริง: POST token จำลองแล้ว print และตอบ JSON ถูกต้อง, token หาย/ว่าง/null ได้ 422, CORS preflight ของ origin ที่อนุญาตผ่านและ origin อื่นถูกปฏิเสธ
-- จำลอง Frontend ด้วย LIFF/fetch/hooks: ส่ง POST ครั้งเดียวระหว่าง effect replay, เรียก login เมื่อยังไม่ล็อกอิน, API error แล้ว retry สำเร็จ, token/API URL หายแสดง error
-- ยังไม่ได้ทดสอบ OAuth ด้วยบัญชี LINE จริงหรือในเบราว์เซอร์
+## ผลตรวจสอบ
+
+- pytest กับ PostgreSQL/pgvector ชั่วคราวแยกจาก Railway: **39 ผ่าน** รวม webhook ซ้ำพร้อมกัน 10 ครั้ง, session/สิทธิ์ข้ามผู้ใช้, ถอนเอกสาร, checksum, submission/task idempotency, lease กู้คืน, LINE timeout/retry key, S3 stub, deletion ledger replay และ downgrade/upgrade migration
+- ESLint ทั้ง LIFF และ TypeScript ผ่าน
+- Next.js production build ด้วย `--webpack` ผ่าน Turbopack ใน environment นี้ติดข้อจำกัดเปิดพอร์ตภายใน จึงใช้ Webpack
+- Python compile และ `git diff --check` ผ่าน
+- ทดลอง extractor กับไฟล์แนบทั้งสองในเครื่อง: DOCX อ่านข้อความได้ และ PDF อ่านได้ 32 หน้า ไม่มีการอัปโหลดหรือแก้ไฟล์ต้นฉบับ
+- LINE, Gemini และ S3 ภายนอกใช้ mock/stub ใน automated tests ไม่ใช่ผลทดสอบบริการจริงหรือคะแนน AI 80 กรณีจากครู
+
+## การใช้งานและสถานะจริง
+
+ดูขั้นตอนใน `README.md` และ `OPERATIONS.md` ตั้งค่า S3 จาก Credentials/Variable References ของ bucket โดยใช้ชื่อ S3 bucket จริง ไม่เดาจากชื่อแสดงผล เริ่ม API และ worker แยก service แล้วให้ผู้ดูแลเพิ่มสมาชิกหลัง Login จริง
+
+หน้า Railway ที่ตรวจอ่านแสดง Trial expired และ API/Postgres ออฟไลน์ จึงยังไม่ได้ deploy อัปโหลดไฟล์แนบ หรือทดสอบ OAuth/LINE Push/Gemini/Bucket จริง เริ่ม `AI_ENABLED=false` จนเอกสารผ่านครู `RelFnc.pdf` ที่แบบฟอร์มอ้างถึงยังไม่ได้รับมา
+
+ก่อนนำร่องยังต้องมีผลบริการจริง ผลครูประเมิน 80 กรณีอย่างอิสระอย่างน้อยสองคน ผล backup/restore/load test และการอนุมัติโรงเรียน รายงานคง `not_ready` เมื่อหลักฐานไม่ครบ ฟังก์ชัน OCR/vector ranking/AI tools ที่เขียนรายการ/การศึกษาผลก่อนหลังยังอยู่นอกโค้ดชุดนี้ตามรายละเอียดใน README

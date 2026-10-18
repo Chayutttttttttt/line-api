@@ -51,3 +51,10 @@ button, input, textarea, select {
 button, a {
   -webkit-tap-highlight-color: transparent;
 }
+
+@layer components {
+  .pilot-input { @apply block w-full rounded-xl border border-border bg-white p-3 text-foreground outline-offset-2 focus:outline-2 focus:outline-brand-blue; }
+  .pilot-button { @apply min-h-11 rounded-xl bg-brand-blue px-4 py-2 font-semibold text-white transition hover:bg-brand-navy disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-blue; }
+  .pilot-secondary { @apply min-h-11 rounded-xl border border-border bg-white px-4 py-2 font-medium text-brand-navy hover:bg-surface-soft disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-blue; }
+  .pilot-heading { @apply mb-4 text-xl font-bold text-brand-navy; }
+}

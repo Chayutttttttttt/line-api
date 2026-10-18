@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     CheckConstraint,
     UniqueConstraint,
+    ForeignKeyConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import SQLModel, Field
@@ -204,6 +205,8 @@ class SchoolMembership(SQLModel, table=True):
 class Course(SQLModel, table=True):
     __tablename__ = "courses"
 
+    __table_args__ = (UniqueConstraint("id", "school_id", name="uq_course_school"),)
+
     id: UUID = Field(
         default_factory=uuid4,
         primary_key=True
@@ -238,6 +241,8 @@ class CourseMembership(SQLModel, table=True):
     __tablename__ = "course_memberships"
 
     __table_args__ = (
+        ForeignKeyConstraint(["course_id", "school_id"], ["courses.id", "courses.school_id"], name="fk_membership_course_school"),
+        ForeignKeyConstraint(["school_id", "user_id"], ["school_memberships.school_id", "school_memberships.user_id"], name="fk_membership_school_user"),
         UniqueConstraint(
             "course_id",
             "user_id",
@@ -313,6 +318,10 @@ class Topic(SQLModel, table=True):
 class Document(SQLModel, table=True):
     __tablename__ = "documents"
 
+    __table_args__ = (ForeignKeyConstraint(["course_id", "school_id"], ["courses.id", "courses.school_id"], name="fk_document_course_school"),)
+
+    purpose: str = "teaching"
+
     id: UUID = Field(
         default_factory=uuid4,
         primary_key=True
@@ -359,6 +368,12 @@ class DocumentVersion(SQLModel, table=True):
     )
 
     version: int
+
+    revision: int = 1
+    filename: str = "document.pdf"
+    content_type: str = "application/pdf"
+    size_bytes: int = 0
+    extraction_error: str | None = None
 
     status: str = Field(
         default="uploaded",
@@ -452,6 +467,10 @@ class Question(SQLModel, table=True):
     )
 
     version: int = 1
+    prompt: str = ""
+    hint: str = ""
+    explanation: str = ""
+    source_version_id: UUID | None = Field(default=None, foreign_key="document_versions.id")
 
     answer_type: str = Field(
         max_length=64
@@ -513,6 +532,8 @@ class PracticeSession(SQLModel, table=True):
 
 class PracticeSessionItem(SQLModel, table=True):
     __tablename__ = "practice_session_items"
+
+    hints_used: int = 0
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -781,6 +802,8 @@ class Reminder(SQLModel, table=True):
 class Conversation(SQLModel, table=True):
     __tablename__ = "conversations"
 
+    course_id: UUID | None = Field(default=None, foreign_key="courses.id")
+
     id: UUID = Field(
         default_factory=uuid4,
         primary_key=True
@@ -1001,6 +1024,10 @@ class MessageOutbox(SQLModel, table=True):
         max_length=32
     )
 
+    attempts: int = 0
+    lease_until: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    next_run_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
     retry_key: str = Field(
         max_length=255
     )
@@ -1095,3 +1122,65 @@ class FeedbackReport(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False)
     )
+
+
+class AuthSession(SQLModel, table=True):
+    __tablename__ = "auth_sessions"
+    token_hash: str = Field(primary_key=True, max_length=64)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class IdempotencyRecord(SQLModel, table=True):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("user_id", "scope", "key", name="uq_idempotency"),)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id")
+    scope: str = Field(max_length=128)
+    key: str = Field(max_length=128)
+    payload_hash: str = Field(max_length=64)
+    result: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+
+
+class ContentReview(SQLModel, table=True):
+    """Append-only teacher decisions; a published file keeps its approval history."""
+    __tablename__ = "content_reviews"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    version_id: UUID = Field(foreign_key="document_versions.id", index=True)
+    reviewer_id: UUID = Field(foreign_key="users.id")
+    decision: str = Field(max_length=32)
+    scope: str = Field(max_length=32)
+    checklist: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    rubric: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    notes: str = ""
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class AcceptanceEvidence(SQLModel, table=True):
+    __tablename__ = "acceptance_evidence"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    course_id: UUID = Field(foreign_key="courses.id", index=True)
+    version_id: UUID | None = Field(default=None, foreign_key="document_versions.id")
+    recorded_by: UUID = Field(foreign_key="users.id")
+    requirement: str = Field(max_length=64)
+    result: str = Field(max_length=32)
+    detail: str
+    artifact_version_id: UUID | None = Field(default=None, foreign_key="document_versions.id")
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class EvaluationResult(SQLModel, table=True):
+    """One human-scored observation. No synthetic pass results are prepopulated."""
+    __tablename__ = "evaluation_results"
+    __table_args__ = (UniqueConstraint("course_id", "run_id", "case_id", "reviewer_id", name="uq_evaluation_case"),)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    course_id: UUID = Field(foreign_key="courses.id", index=True)
+    run_id: UUID
+    case_id: str = Field(max_length=32)
+    reviewer_id: UUID = Field(foreign_key="users.id")
+    evidence_id: UUID = Field(foreign_key="acceptance_evidence.id")
+    scores: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    critical: bool = False
+    model: str
+    prompt_version: str
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
