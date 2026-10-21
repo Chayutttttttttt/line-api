@@ -67,8 +67,10 @@ def persist_events(body: bytes, db: Session):
         if event.get("type") == "message" and message.get("type") == "text":
             text = message.get("text", "")
             if isinstance(text, str) and 0 < len(text) <= 4000:
+                profile = db.exec(select(UserProfile).where(UserProfile.user_id == identity.user_id)).first()
+                selected = profile.preferences.get("active_course_id") if profile else None
                 db.add(Job(webhook_event_id=event_id, user_id=identity.user_id,
-                    payload={"text": text, "line_message_id": message.get("id"),
+                    payload={"text": text, "course_id": selected, "line_message_id": message.get("id"),
                         "timestamp": event.get("timestamp"), "request_id": str(event_id)}))
     db.commit()
     return {"accepted": accepted}

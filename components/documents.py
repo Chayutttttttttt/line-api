@@ -1,6 +1,8 @@
 """Course-scoped ingestion, teacher review and private versioned downloads."""
 import hashlib
 import io
+import re
+import unicodedata
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
@@ -17,13 +19,13 @@ from components.login import course_access, current_user
 from components.storage import put_file, read_file
 from config import MAX_UPLOAD_BYTES
 from db.database import get_session
-from db.models import (AuditEvent, Chunk, ContentReview, Document, DocumentVersion, Job, User, utc_now)
+from db.models import (AuditEvent, Chunk, ContentReview, Document, DocumentVersion, Job, Topic, User, utc_now)
 
 router = APIRouter(tags=["documents"])
 CHECKLIST = {
     "scope": "ขอบเขตและรายวิชาถูกต้อง",
-    "definitions": "นิยามโดเมน เรนจ์ และฟังก์ชันถูกต้อง",
-    "notation": "เซต คู่อันดับ จำนวนลบ และศูนย์ถูกต้อง",
+    "definitions": "นิยาม แนวคิด และข้อเท็จจริงของรายวิชาถูกต้อง",
+    "notation": "ศัพท์ สัญลักษณ์ หน่วย และรูปแบบภาษาถูกต้องตามรายวิชา",
     "examples": "ตัวอย่างตรวจย้อนกลับได้",
     "solutions": "เฉลยและเหตุผลถูกต้อง",
     "hints": "คำใบ้ช่วยให้ลองต่อ",
@@ -280,9 +282,28 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str):
     rows = db.exec(select(Chunk, DocumentVersion, Document).join(DocumentVersion, Chunk.version_id == DocumentVersion.id)
         .join(Document, DocumentVersion.document_id == Document.id).where(Document.course_id == course_id,
             Document.purpose == "teaching", DocumentVersion.status == "published")).all()
-    terms = {t.lower() for t in query.split() if len(t) > 1}
-    terms.update(t for t in ("โดเมน", "เรนจ์", "ฟังก์ชัน", "คู่อันดับ") if t in query)
-    scored = [(sum(term in c.text.lower() for term in terms), c, v, d) for c, v, d in rows]
+    def normalize(value):
+        return unicodedata.normalize("NFC", value).casefold()
+
+    query = normalize(query[:8000])
+    terms = set(re.findall(r"[^\W_]{2,}", query))
+    # Thai text often has no spaces. Character grams avoid a subject-specific dictionary.
+    grams = {word[i:i+3] for word in re.findall(r"[\u0e00-\u0e7f]+", query)
+        for i in range(len(word) - 2)}
+    keywords = set()
+    for topic in db.exec(select(Topic).where(Topic.course_id == course_id)).all():
+        vocabulary = [normalize(topic.title), *[normalize(k) for k in topic.keywords]]
+        if any(k in query for k in vocabulary):
+            keywords.update(vocabulary)
+    scored = []
+    for chunk, version, document in rows:
+        text = normalize(chunk.text)
+        direct = sum(term in text for term in terms)
+        topic_match = sum(term in text for term in keywords)
+        shared = sum(g in text for g in grams)
+        gram_score = shared / max(len(grams), 1) if shared >= 3 else 0
+        score = direct * 3 + topic_match * 4 + (gram_score if gram_score >= .2 else 0)
+        scored.append((score, chunk, version, document))
     scored.sort(key=lambda row: (-row[0], str(row[1].id)))
     return [{"chunk_id": str(c.id), "version_id": str(v.id), "document": d.title, "filename": v.filename,
         "version": v.version, "page_no": c.page_no, "checksum": v.checksum, "text": c.text}

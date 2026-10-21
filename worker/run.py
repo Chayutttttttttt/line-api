@@ -87,6 +87,11 @@ def process_job(claim):
                 selected = claim["payload"].get("course_id")
                 course_id = UUID(selected) if selected else memberships[0].course_id if len(memberships) == 1 else None
                 if course_id:
+                    course = course_access(db, user, course_id)
+                    course_context = {"id": str(course.id), "title": course.title, "subject": course.subject,
+                        "grade_level": course.grade_level, "scope": course.learning_scope,
+                        "language": course.response_language, "revision": course.revision,
+                        "topics": [t.title for t in db.exec(select(Topic).where(Topic.course_id == course_id)).all()]}
                     conversation = db.exec(select(Conversation).where(Conversation.owner_id == user.id,
                         Conversation.course_id == course_id, Conversation.deleted_at == None)
                         .order_by(Conversation.created_at.desc())).first()
@@ -108,7 +113,7 @@ def process_job(claim):
                 else:
                     result = {"answer": "กรุณาเปิด LIFF และเลือกวิชาที่ต้องการ หรือติดต่อครูเพื่อลงทะเบียนรายวิชา", "citations": []}
         if result is None:
-            result = generate_answer(claim["payload"]["text"], chunks, history)
+            result = generate_answer(claim["payload"]["text"], chunks, history, course_context)
         with Session(engine, expire_on_commit=False) as db:
             # Fence stale workers, deletion requests and concurrent document withdrawal.
             user = db.exec(select(User).where(User.id == claim["user_id"]).with_for_update()).one()
@@ -116,7 +121,9 @@ def process_job(claim):
             if job.state != "running" or job.attempts != attempt or job.lease_until <= utc_now() or user.status != "active":
                 return
             if course_id:
-                course_access(db, user, course_id)
+                current_course = course_access(db, user, course_id)
+                if current_course.revision != course_context["revision"]:
+                    raise ValueError("COURSE_CHANGED_DURING_GENERATION")
             for citation in result.get("citations", []):
                 source = db.get(DocumentVersion, UUID(citation["version_id"]))
                 if not source or source.status != "published":
@@ -138,9 +145,12 @@ def process_job(claim):
             if job.webhook_event_id:
                 create_outbox(db, user.id, f"job:{job.id}", answer,
                     payload={"course_id": str(course_id) if course_id else None,
+                        "course_revision": course_context["revision"] if course_id else None,
                         "version_ids": [c["version_id"] for c in result.get("citations", [])], "message_id": str(message.id)})
             job.payload = {"request_id": claim["payload"].get("request_id"), "message_id": str(message.id),
                 "model": result.get("model"), "prompt_version": PROMPT_VERSION,
+                "course_id": str(course_id) if course_id else None,
+                "course_revision": course_context["revision"] if course_id else None,
                 "usage": result.get("usage", {}), "citations": [
                     {k: c[k] for k in ("chunk_id", "version_id", "checksum", "page_no")} for c in result.get("citations", [])]}
             job.state, job.updated_at = "done", utc_now()
@@ -253,7 +263,9 @@ def send_outbox():
                     db.commit()
                     return
             if valid and outbox.payload.get("course_id"):
-                course_access(db, user, UUID(outbox.payload["course_id"]))
+                course = course_access(db, user, UUID(outbox.payload["course_id"]))
+                if outbox.payload.get("course_revision") is not None:
+                    valid = valid and course.revision == outbox.payload["course_revision"]
             if valid:
                 for version_id in outbox.payload.get("version_ids", []):
                     source = db.get(DocumentVersion, UUID(version_id))

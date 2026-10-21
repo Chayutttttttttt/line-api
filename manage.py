@@ -56,6 +56,10 @@ def main():
     bootstrap.add_argument("--teacher-user-id", type=UUID, required=True)
     bootstrap.add_argument("--school", required=True)
     bootstrap.add_argument("--course", required=True)
+    bootstrap.add_argument("--subject", default="ทั่วไป")
+    bootstrap.add_argument("--scope", default="เนื้อหาตามเอกสารที่ครูอนุมัติในรายวิชานี้")
+    bootstrap.add_argument("--language", default="ไทย")
+    bootstrap.add_argument("--topic", action="append", default=[], help="Repeat for each initial topic")
     member = sub.add_parser("add-member")
     member.add_argument("--user-id", type=UUID, required=True)
     member.add_argument("--course-id", type=UUID, required=True)
@@ -95,9 +99,10 @@ def main():
                 db.add(school); db.flush()
             course = db.exec(select(Course).where(Course.school_id == school.id, Course.title == args.course)).first()
             if not course:
-                course = Course(school_id=school.id, title=args.course)
+                course = Course(school_id=school.id, title=args.course, subject=args.subject,
+                    learning_scope=args.scope, response_language=args.language)
                 db.add(course); db.flush()
-                for title in ("โดเมน", "เรนจ์", "การเป็นฟังก์ชัน"):
+                for title in dict.fromkeys(args.topic):
                     db.add(Topic(course_id=course.id, title=title))
             add_membership(db, user, course, "teacher")
             db.commit()

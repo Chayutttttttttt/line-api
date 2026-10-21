@@ -207,6 +207,13 @@ class Course(SQLModel, table=True):
 
     __table_args__ = (UniqueConstraint("id", "school_id", name="uq_course_school"),)
 
+    subject: str = Field(default="ทั่วไป", max_length=255)
+    learning_scope: str = ""
+    response_language: str = Field(default="ไทย", max_length=64)
+    revision: int = 1
+    evaluation_profile: str = "general"
+    evaluation_overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+
     id: UUID = Field(
         default_factory=uuid4,
         primary_key=True
@@ -290,6 +297,8 @@ class CourseMembership(SQLModel, table=True):
 
 class Topic(SQLModel, table=True):
     __tablename__ = "topics"
+
+    keywords: list[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -559,6 +568,8 @@ class PracticeSessionItem(SQLModel, table=True):
 
 class Attempt(SQLModel, table=True):
     __tablename__ = "attempts"
+
+    score_status: str = "graded"
 
     __table_args__ = (
         UniqueConstraint(
@@ -1171,6 +1182,8 @@ class AcceptanceEvidence(SQLModel, table=True):
 
 class EvaluationResult(SQLModel, table=True):
     """One human-scored observation. No synthetic pass results are prepopulated."""
+
+    course_revision: int = 1
     __tablename__ = "evaluation_results"
     __table_args__ = (UniqueConstraint("course_id", "run_id", "case_id", "reviewer_id", name="uq_evaluation_case"),)
     id: UUID = Field(default_factory=uuid4, primary_key=True)

@@ -48,7 +48,8 @@ def context(migrated_database):
     with Session(engine) as db:
         school, other_school = School(name="Test school"), School(name="Other school")
         db.add_all([school, other_school]); db.flush()
-        course = Course(school_id=school.id, title="ความสัมพันธ์และฟังก์ชัน")
+        course = Course(school_id=school.id, title="ความสัมพันธ์และฟังก์ชัน", subject="คณิตศาสตร์",
+            learning_scope="โดเมน เรนจ์ และการเป็นฟังก์ชันจากเซตคู่อันดับจำนวนเต็ม", evaluation_profile="relations-pilot")
         db.add(course); db.flush()
         topic = Topic(course_id=course.id, title="โดเมน")
         db.add(topic)

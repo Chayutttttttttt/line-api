@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ผู้ช่วยคณิตศาสตร์ | LINE",
-  description: "เรียนและฝึกคณิตศาสตร์จากเอกสารที่ครูอนุมัติ พร้อมหลักฐานตรวจรับก่อนนำร่อง",
+  title: "ผู้ช่วยเรียน | LINE",
+  description: "เรียนและฝึกทุกวิชาจากเอกสารที่ครูอนุมัติ พร้อมหลักฐานตรวจรับก่อนนำร่อง",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

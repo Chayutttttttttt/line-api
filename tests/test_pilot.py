@@ -243,7 +243,7 @@ def test_worker_crash_lease_fencing_and_atomic_outbox(context, monkeypatch):
         db.add(job); db.commit()
     reclaimed = worker.claim_job()
     assert reclaimed["attempts"] == 2
-    monkeypatch.setattr(worker, "generate_answer", lambda prompt, chunks, history: {"answer": "ดูสมาชิกตัวหน้า", "citations": chunks, "model": "stub", "usage": {}})
+    monkeypatch.setattr(worker, "generate_answer", lambda prompt, chunks, history, course: {"answer": "ดูสมาชิกตัวหน้า", "citations": chunks, "model": "stub", "usage": {}})
     worker.process_job(first_claim)
     with Session(engine) as db:
         assert not db.exec(select(MessageOutbox)).all()
@@ -403,7 +403,7 @@ def test_withdrawal_cancels_already_queued_ai_push(context, monkeypatch):
 def test_chat_context_scoped_to_course_and_user(context, monkeypatch):
     publish(context)
     histories = []
-    def answer(prompt, chunks, history):
+    def answer(prompt, chunks, history, course):
         histories.append(history)
         assert chunks
         return {"answer": "ดูสมาชิกตัวหน้า", "citations": chunks, "model": "stub", "usage": {}}
@@ -449,7 +449,7 @@ def test_evidence_export_version_and_evaluation_scores(context):
     result = client.get(f"/courses/{context['course']}/acceptance", headers=context["teacher_headers"], params={"build_ref": "abcdef1"}).json()
     assert result["artifact_inventory"][0]["checksum"]
     scores = {"correctness": 3, "citations": None, "teaching": 3, "uncertainty": None}
-    evaluation = {"run_id": str(uuid4()), "case_id": "content-01", "evidence_id": evidence_id,
+    evaluation = {"expected_course_revision": 1, "run_id": str(uuid4()), "case_id": "content-01", "evidence_id": evidence_id,
         "scores": scores, "model": "stub", "prompt_version": "v1"}
     assert client.post(f"/courses/{context['course']}/evaluations", headers=context["teacher_headers"], json=evaluation).status_code == 201
     assert client.post(f"/courses/{context['course']}/evaluations", headers=context["teacher_headers"], json=evaluation).status_code == 409
@@ -475,7 +475,7 @@ def test_migration_downgrade_then_upgrade_preserves_initial(context):
     command.downgrade(config, "9bce9b6e09b4")
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20261018_acceptance"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20261021_multisubject"
 
 
 def test_saved_preferences_feedback_and_teacher_progress(context, monkeypatch):

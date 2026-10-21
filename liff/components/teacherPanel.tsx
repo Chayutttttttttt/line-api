@@ -8,6 +8,7 @@ type Chunk = { id: string; text: string; page_no: number | null };
 type Detail = { version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
 type Report = { readiness: string; blockers: string[] };
 type Question = { id: string; prompt: string; status: string };
+type EvaluationCase = { id: string; input: string; expected: string; failure: string; needs_customization: boolean };
 const value = (form: FormData, key: string) => String(form.get(key) ?? "");
 
 export default function TeacherPanel({ courseId, mode }: { courseId: string; mode: "documents" | "acceptance" }) {
@@ -17,7 +18,9 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
   const [selectedId, setSelectedId] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
   const [topics, setTopics] = useState<{ id: string; title: string }[]>([]);
-  const [cases, setCases] = useState<{ id: string; input: string }[]>([]);
+  const [cases, setCases] = useState<EvaluationCase[]>([]);
+  const [courseRevision, setCourseRevision] = useState(1);
+  const [editingCase, setEditingCase] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -27,8 +30,8 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
     let active = true;
     Promise.all([api<Version[]>(`/documents?course_id=${courseId}`), api<Record<string, string>>("/documents/checklist"),
       api<Question[]>(`/questions?course_id=${courseId}`), api<{id: string; title: string}[]>(`/topics?course_id=${courseId}`),
-      api<{cases: {id: string; input: string}[]}>("/evaluation/cases")])
-      .then(([v, c, q, t, e]) => { if (active) { setVersions(v); setChecklist(c); setQuestions(q); setTopics(t); setCases(e.cases); } })
+      api<{cases: EvaluationCase[]; course_revision: number}>(`/evaluation/cases?course_id=${courseId}`)])
+      .then(([v, c, q, t, e]) => { if (active) { setVersions(v); setChecklist(c); setQuestions(q); setTopics(t); setCases(e.cases); setCourseRevision(e.course_revision); } })
       .catch((e: Error) => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [courseId]);
@@ -73,7 +76,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         </form>)}
         {detail.version.status === "review" && <form key={detail.version.revision} className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const checks = Object.fromEntries(Object.keys(checklist).map((key) => [key, form.has(key)])); void run(async () => { await api(`/documents/${detail.version.document_id}/publish`, { method: "POST", body: JSON.stringify({ version: detail.version.version, expected_revision: detail.version.revision, decision: value(form, "decision"), scope: value(form, "scope"), notes: value(form, "notes"), checklist: checks, rubric: Object.fromEntries(["correctness", "citations", "teaching", "scope"].map((key) => [key, Number(value(form, `rubric_${key}`))])) }) }); setMessage("บันทึกผลตรวจแล้ว"); await refresh(); }); }}>
           <fieldset className="space-y-2"><legend className="mb-2 font-semibold">รายการตรวจตามแบบรับรองเนื้อหา</legend>{Object.entries(checklist).map(([key, label]) => <label key={key} className="flex items-start gap-3"><input type="checkbox" name={key} className="mt-1 size-4 shrink-0" />{label}</label>)}</fieldset>
-          <fieldset className="space-y-2"><legend className="font-semibold">คะแนนตรวจเนื้อหา Word 0–2 (อนุมัติต้องได้ 2 ทุกด้าน)</legend>{[["correctness", "ความถูกต้อง"], ["citations", "แหล่งอ้างอิง"], ["teaching", "การช่วยสอน"], ["scope", "การควบคุมขอบเขต"]].map(([key, label]) => <label className="block" key={key}>{label}<input type="number" min={0} max={2} name={`rubric_${key}`} className="pilot-input" /></label>)}</fieldset>
+          <fieldset className="space-y-2"><legend className="font-semibold">คะแนนตรวจเนื้อหา 0–2 (อนุมัติต้องได้ 2 ทุกด้าน)</legend>{[["correctness", "ความถูกต้อง"], ["citations", "แหล่งอ้างอิง"], ["teaching", "การช่วยสอน"], ["scope", "การควบคุมขอบเขต"]].map(([key, label]) => <label className="block" key={key}>{label}<input type="number" min={0} max={2} name={`rubric_${key}`} className="pilot-input" /></label>)}</fieldset>
           <label className="block">ขอบเขตอนุมัติ<select name="scope" className="pilot-input"><option value="prototype">ต้นแบบเท่านั้น</option><option value="pilot">เนื้อหาสำหรับกลุ่มนำร่อง</option></select></label>
           <label className="block">ผลตรวจ<select name="decision" className="pilot-input"><option value="revise">ให้แก้ไข</option><option value="approve">อนุมัติ</option><option value="reject">ไม่อนุมัติ</option></select></label>
           <label className="block">ข้อแก้ไขและเงื่อนไข<textarea name="notes" maxLength={5000} className="pilot-input" /></label><button className="pilot-button" disabled={busy}>บันทึกผลตรวจ</button>
@@ -81,11 +84,10 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         {detail.version.status === "published" && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
         <h3 className="font-semibold">ประวัติผลตรวจ</h3>{detail.reviews.map((r) => <p key={r.id} className="rounded-xl bg-surface-soft p-3 text-sm break-all">{r.decision} · {r.scope} · {new Date(r.created_at).toLocaleString("th-TH")}<br />ผู้ตรวจ {r.reviewer_id}<br />{r.notes}<br />คะแนน 0–2: {Object.entries(r.rubric).map(([key, score]) => `${key} ${score}`).join(" · ")}</p>)}
       </article>}
-      <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">จัดโจทย์และเฉลยสำหรับครู</summary><form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api("/questions", { method: "POST", body: JSON.stringify({ topic_id: value(form, "topic"), prompt: value(form, "prompt"), hint: value(form, "hint"), explanation: value(form, "explanation"), answer_type: value(form, "type"), grading_spec: { expected: JSON.parse(value(form, "expected")) }, source_version_id: value(form, "source") }) }); setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); setMessage("สร้างโจทย์ร่างแล้ว ตรวจเฉลยก่อนอนุมัติ"); }); }}>
-        <label className="block">หัวข้อ<select name="topic" required className="pilot-input">{topics.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label className="block">แหล่งเอกสาร<select name="source" required className="pilot-input">{versions.filter((v) => v.purpose === "teaching" && v.status === "published").map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label>
-        {[ ["prompt", "โจทย์"], ["hint", "คำใบ้"], ["explanation", "เฉลยและเหตุผล"] ].map(([name, label]) => <label className="block" key={name}>{label}<textarea required name={name} maxLength={2000} className="pilot-input" /></label>)}
-        <label className="block">ชนิดคำตอบ<select name="type" className="pilot-input"><option value="integer_set">เซตจำนวนเต็ม</option><option value="boolean">เป็นฟังก์ชันหรือไม่</option></select></label><label className="block">คำตอบมาตรฐาน JSON เช่น [-2,0,3] หรือ true<input name="expected" required className="pilot-input" /></label><button disabled={busy} className="pilot-button">สร้างโจทย์ร่าง</button>
-      </form><ul className="mt-4 space-y-3">{questions.map((q) => <li key={q.id} className="rounded-xl bg-surface-soft p-3">{q.prompt} · {q.status}{q.status === "draft" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => { await api(`/questions/${q.id}/publish`, { method: "POST" }); setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); })}>รับรองโจทย์และเฉลย</button>}</li>)}</ul></details>
+      <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">จัดโจทย์และเฉลยสำหรับครู</summary><QuestionForm topics={topics} versions={versions} busy={busy} onSave={(data) => run(async () => {
+        await api("/questions", { method: "POST", body: JSON.stringify(data) });
+        setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); setMessage("สร้างโจทย์ร่างแล้ว ตรวจเฉลยก่อนอนุมัติ");
+      })} /><ul className="mt-4 space-y-3">{questions.map((q) => <li key={q.id} className="rounded-xl bg-surface-soft p-3">{q.prompt} · {q.status}{q.status === "draft" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => { await api(`/questions/${q.id}/publish`, { method: "POST" }); setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); })}>รับรองโจทย์และเฉลย</button>}</li>)}</ul></details>
     </>}
     {mode === "acceptance" && <>
       <p className="text-sm text-secondary">บันทึกผลจริงพร้อมรุ่นโปรแกรม ทุกกรณีเริ่มเป็น “ยังไม่ทดสอบ” ต้องตรวจโดยครูและโรงเรียนก่อนเริ่มนำร่อง</p>
@@ -95,11 +97,56 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         {[["build", "Commit หรือรุ่นโปรแกรม"], ["expected", "ผลที่คาดหวัง"], ["actual", "ผลที่เกิดขึ้นจริง"], ["detail", "วิธีทดสอบ สภาพแวดล้อม และรายละเอียดหลักฐาน"]].map(([name, label]) => <label key={name} className="block">{label}<textarea required name={name} minLength={name === "build" ? 7 : 1} maxLength={5000} className="pilot-input" /></label>)}
         <label className="block">แนบไฟล์หลักฐานรุ่นที่เก็บไว้<select name="artifact" className="pilot-input"><option value="">ไม่แนบไฟล์</option>{versions.filter((v) => v.purpose === "evidence").map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label><button disabled={busy} className="pilot-button">บันทึกหลักฐานจริง</button>
       </form>
-      <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">ให้คะแนนชุดประเมิน AI จำนวน 80 กรณี</summary><p className="my-3 text-sm">คะแนน roadmap ใช้ 0–3; ช่องว่างคือ N/A แยกจาก rubric 0–2 ในแบบตรวจเนื้อหา</p><form className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/courses/${courseId}/evaluations`, { method: "POST", body: JSON.stringify({ run_id: value(form, "run"), case_id: value(form, "case"), evidence_id: value(form, "evidence"), scores: Object.fromEntries(["correctness", "citations", "teaching", "uncertainty"].map((key) => [key, value(form, key) === "" ? null : Number(value(form, key))])), critical: form.has("critical"), model: value(form, "model"), prompt_version: value(form, "prompt") }) }); setMessage("บันทึกคะแนนแล้ว"); }); }}>
+      <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">จัดชุดทดสอบให้ตรงรายวิชา</summary>
+        <p className="my-3 text-sm">กำหนดโจทย์ ผลคาดหวัง และสิ่งที่ถือว่าผิดให้ครบก่อนเริ่มให้คะแนน การแก้ชุดทดสอบจะต้องประเมินรอบใหม่ เหลือ {cases.filter((c) => c.needs_customization).length} กรณีที่ต้องกำหนด</p>
+        <label className="block">กรณีทดสอบ<select value={editingCase} onChange={(e) => setEditingCase(e.target.value)} className="pilot-input"><option value="">เลือกกรณี</option>{cases.map((c) => <option key={c.id} value={c.id}>{c.id} · {c.needs_customization ? "ยังไม่กำหนด" : "กำหนดแล้ว"}</option>)}</select></label>
+        {cases.filter((c) => c.id === editingCase).map((c) => <form key={`${c.id}-${courseRevision}`} className="mt-3 space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
+          await api(`/courses/${courseId}/evaluation-cases/${c.id}`, { method: "PUT", body: JSON.stringify({ expected_revision: courseRevision, input: value(form, "input"), expected: value(form, "expected"), failure: value(form, "failure") }) });
+          const suite = await api<{cases: EvaluationCase[]; course_revision: number}>(`/evaluation/cases?course_id=${courseId}`);
+          setCases(suite.cases); setCourseRevision(suite.course_revision); setReport(null); setMessage("บันทึกกรณีทดสอบแล้ว");
+        }); }}>
+          <label className="block">โจทย์ / ลำดับการทดสอบ<textarea required name="input" maxLength={4000} defaultValue={c.input} className="pilot-input" /></label>
+          <label className="block">คำตอบและพฤติกรรมที่คาดหวัง<textarea required name="expected" maxLength={4000} defaultValue={c.expected} className="pilot-input" /></label>
+          <label className="block">ข้อผิดพลาดที่ต้องจับ<textarea required name="failure" maxLength={4000} defaultValue={c.failure} className="pilot-input" /></label>
+          <button disabled={busy} className="pilot-button">ยืนยันกรณีสำหรับวิชานี้</button>
+        </form>)}
+      </details>
+      <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">ให้คะแนนชุดประเมิน AI จำนวน 80 กรณี</summary><p className="my-3 text-sm">คะแนน roadmap ใช้ 0–3; ช่องว่างคือ N/A แยกจาก rubric 0–2 ในแบบตรวจเนื้อหา</p><form className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/courses/${courseId}/evaluations`, { method: "POST", body: JSON.stringify({ expected_course_revision: courseRevision, run_id: value(form, "run"), case_id: value(form, "case"), evidence_id: value(form, "evidence"), scores: Object.fromEntries(["correctness", "citations", "teaching", "uncertainty"].map((key) => [key, value(form, key) === "" ? null : Number(value(form, key))])), critical: form.has("critical"), model: value(form, "model"), prompt_version: value(form, "prompt") }) }); setMessage("บันทึกคะแนนแล้ว"); }); }}>
         {[["run", "UUID ของรอบประเมิน"], ["evidence", "UUID หลักฐานที่บันทึกไว้"], ["model", "รุ่นโมเดล"], ["prompt", "รุ่น prompt"]].map(([name, label]) => <label className="block" key={name}>{label}<input required name={name} className="pilot-input" /></label>)}<label className="block">กรณี<select name="case" className="pilot-input">{cases.map((c) => <option key={c.id} value={c.id}>{c.id} · {c.input}</option>)}</select></label>{["correctness", "citations", "teaching", "uncertainty"].map((key) => <label className="block" key={key}>{key}<input name={key} type="number" min={0} max={3} className="pilot-input" /></label>)}<label className="flex gap-3"><input type="checkbox" name="critical" /> พบข้อผิดพลาดวิกฤต</label><button className="pilot-button" disabled={busy}>บันทึกคะแนนกรณีนี้</button>
       </form><button className="pilot-secondary mt-3" onClick={() => saveBlob(new Blob([JSON.stringify(cases, null, 2)], {type: "application/json"}), "ai-evaluation-80-cases.json")}>ดาวน์โหลดรายการ 80 กรณี</button></details>
       <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { const params = new URLSearchParams({build_ref: value(form, "build")}); if (value(form, "run")) params.set("run_id", value(form, "run")); const result = await api<Report>(`/courses/${courseId}/acceptance?${params}`); setReport(result); saveBlob(new Blob([JSON.stringify(result, null, 2)], {type: "application/json"}), "pre-pilot-acceptance.json"); }); }}><label className="block">รุ่นโปรแกรมที่ต้องตรวจ<input required minLength={7} name="build" className="pilot-input" /></label><label className="block">UUID รอบประเมิน AI (หากมี)<input name="run" className="pilot-input" /></label><button className="pilot-button" disabled={busy}>ตรวจความพร้อมและส่งออกหลักฐาน JSON</button></form>
       {report && <div role="status"><p className="font-semibold">{report.readiness === "not_ready" ? "ยังไม่พร้อมนำร่อง" : "หลักฐานครบ รอการตัดสินจากโรงเรียน"}</p><ul className="mt-3 list-disc space-y-2 pl-5">{report.blockers.map((b) => <li key={b}>{b}</li>)}</ul></div>}
     </>}
   </div>;
+}
+
+
+type QuestionDraft = { topic_id: string; source_version_id: string; prompt: string; hint: string; explanation: string; answer_type: string; grading_spec: Record<string, unknown> };
+function QuestionForm({ topics, versions, busy, onSave }: { topics: {id: string; title: string}[]; versions: Version[]; busy: boolean; onSave: (data: QuestionDraft) => Promise<void> }) {
+  const [type, setType] = useState("multiple_choice");
+  return <form className="mt-4 space-y-3" onSubmit={(e) => {
+    e.preventDefault(); const form = new FormData(e.currentTarget);
+    let spec: Record<string, unknown>;
+    if (type === "multiple_choice") spec = { options: value(form, "options").split("\n").map((t) => t.trim()).filter(Boolean).map((text, i) => ({ id: String(i + 1), text })), expected: value(form, "choice") };
+    else if (type === "boolean") spec = { expected: value(form, "boolean") === "true" };
+    else if (type === "numeric") spec = { expected: value(form, "number"), tolerance: value(form, "tolerance"), unit: value(form, "unit") };
+    else if (type === "short_text") spec = { accepted: value(form, "accepted").split("\n").map((t) => t.trim()).filter(Boolean), case_sensitive: form.has("case_sensitive") };
+    else if (type === "manual") spec = { criteria: value(form, "criteria") };
+    else spec = { expected: value(form, "set").trim() ? value(form, "set").split(",").map((n) => /^[-+]?\d+$/.test(n.trim()) ? Number(n) : null) : [] };
+    void onSave({ topic_id: value(form, "topic"), source_version_id: value(form, "source"), prompt: value(form, "prompt"), hint: value(form, "hint"), explanation: value(form, "explanation"), answer_type: type, grading_spec: spec });
+  }}>
+    <label className="block">หัวข้อ<select name="topic" required className="pilot-input">{topics.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}</select></label>
+    <label className="block">แหล่งเอกสาร<select name="source" required className="pilot-input">{versions.filter((v) => v.purpose === "teaching" && v.status === "published").map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label>
+    {[["prompt", "โจทย์"], ["hint", "คำใบ้"], ["explanation", "เฉลย / แนวคำตอบสำหรับครู"]].map(([name, label]) => <label className="block" key={name}>{label}<textarea required name={name} maxLength={2000} className="pilot-input" /></label>)}
+    <label className="block">รูปแบบคำตอบ<select value={type} onChange={(e) => setType(e.target.value)} className="pilot-input">
+      {[["multiple_choice", "ปรนัย"], ["boolean", "จริง / เท็จ"], ["numeric", "ตัวเลข"], ["short_text", "คำตอบสั้นตรงตามรายการ"], ["manual", "คำตอบอธิบาย — ครูตรวจ"], ["integer_set", "เซตจำนวนเต็ม"]].map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+    </select></label>
+    {type === "multiple_choice" && <><label className="block">ตัวเลือก 2–8 ข้อ (หนึ่งตัวเลือกต่อบรรทัด)<textarea required name="options" rows={4} className="pilot-input" /></label><label className="block">ลำดับตัวเลือกที่ถูก<input name="choice" required type="number" min={1} max={8} className="pilot-input" /></label></>}
+    {type === "boolean" && <label className="block">คำตอบที่ถูก<select name="boolean" className="pilot-input"><option value="true">จริง / ใช่</option><option value="false">เท็จ / ไม่ใช่</option></select></label>}
+    {type === "numeric" && <><label className="block">คำตอบตัวเลข<input name="number" required className="pilot-input" /></label><label className="block">ค่าคลาดเคลื่อนสัมบูรณ์ที่ยอมรับ<input name="tolerance" required defaultValue="0" className="pilot-input" /></label><label className="block">หน่วยที่ผู้เรียนต้องใช้<input name="unit" maxLength={64} className="pilot-input" /></label></>}
+    {type === "short_text" && <><label className="block">คำตอบที่ยอมรับ (หนึ่งคำตอบต่อบรรทัด)<textarea name="accepted" required className="pilot-input" /></label><label className="flex gap-2"><input name="case_sensitive" type="checkbox" /> แยกตัวพิมพ์เล็กและใหญ่</label><p className="text-sm">ตรวจตามรายการที่กำหนด หากต้องประเมินความหมายหรือเหตุผล ให้เลือกคำตอบอธิบาย</p></>}
+    {type === "manual" && <label className="block">เกณฑ์ให้คะแนนที่แสดงให้ผู้เรียนทราบ<textarea name="criteria" required maxLength={4000} className="pilot-input" /></label>}
+    {type === "integer_set" && <label className="block">สมาชิกเซตคั่นด้วยจุลภาค เช่น -2,0,3 (เว้นว่างสำหรับเซตว่าง)<input name="set" className="pilot-input" /></label>}
+    <button disabled={busy || !topics.length} className="pilot-button">สร้างโจทย์ร่าง</button>
+  </form>;
 }

@@ -7,19 +7,149 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy import delete, text
 from sqlmodel import Session, select
 
 from components.documents import RevisionRequest
-from components.grading import grade, validate_spec
+from components.grading import AnswerType, grade, student_answer_config, validate_spec
 from components.login import course_access, current_user
 from db.database import get_session
 from db.models import (Attempt, AuditEvent, AuthSession, Conversation, DocumentVersion, FeedbackReport,
-    IdempotencyRecord, Job, LearningPlan, LineIdentity, Message, MessageOutbox, PlanItem,
+    Course, CourseMembership, SchoolMembership, IdempotencyRecord, Job, LearningPlan, LineIdentity, Message, MessageOutbox, PlanItem,
     PracticeSession, PracticeSessionItem, Question, Reminder, Task, Topic, User, UserProfile, utc_now)
 
 router = APIRouter(tags=["learning"])
+
+
+class CourseSettings(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    subject: str = Field(min_length=1, max_length=255)
+    learning_scope: str = Field(min_length=1, max_length=4000)
+    response_language: str = Field(default="ไทย", min_length=1, max_length=64)
+    grade_level: str | None = Field(default=None, max_length=32)
+
+    @field_validator("title", "subject", "learning_scope", "response_language")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("Must not be blank")
+        return value.strip()
+
+
+class CourseCreate(CourseSettings):
+    school_id: UUID
+
+
+class CourseUpdate(CourseSettings):
+    expected_revision: int = Field(ge=1)
+
+
+def course_info(course):
+    return course.model_dump(exclude={"evaluation_overrides"})
+
+
+@router.post("/courses", status_code=201)
+def create_course(data: CourseCreate, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    membership = db.exec(select(SchoolMembership).where(SchoolMembership.school_id == data.school_id,
+        SchoolMembership.user_id == user.id, SchoolMembership.status == "active",
+        SchoolMembership.role.in_(["teacher", "admin"]))).first()
+    if not membership:
+        raise HTTPException(403, "SCHOOL_TEACHER_REQUIRED")
+    course = Course(**data.model_dump())
+    db.add(course); db.flush()
+    db.add(CourseMembership(school_id=course.school_id, course_id=course.id, user_id=user.id, role="teacher"))
+    db.add(AuditEvent(actor_id=user.id, action="course.create", object_id=course.id))
+    db.commit()
+    return course_info(course)
+
+
+@router.get("/courses/{course_id}")
+def get_course(course_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    return course_info(course_access(db, user, course_id))
+
+
+def lock_course(db, user, course_id, expected_revision):
+    course_access(db, user, course_id, True)
+    course = db.exec(select(Course).where(Course.id == course_id).with_for_update().execution_options(populate_existing=True)).one()
+    if course.revision != expected_revision:
+        raise HTTPException(409, "REVISION_CONFLICT")
+    return course
+
+
+@router.put("/courses/{course_id}")
+def update_course(course_id: UUID, data: CourseUpdate, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course = lock_course(db, user, course_id, data.expected_revision)
+    for key, value in data.model_dump(exclude={"expected_revision"}).items():
+        setattr(course, key, value)
+    course.revision += 1
+    course.evaluation_profile, course.evaluation_overrides = "general", {}
+    db.add(course)
+    db.add(AuditEvent(actor_id=user.id, action="course.configure", object_id=course.id))
+    db.commit()
+    return course_info(course)
+
+
+class TopicRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    keywords: list[str] = Field(default_factory=list, max_length=30)
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def title_nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("Title required")
+        return value.strip()
+
+    @field_validator("keywords")
+    @classmethod
+    def bounded_keywords(cls, value):
+        if any(not k.strip() or len(k) > 100 for k in value):
+            raise ValueError("Invalid keywords")
+        return list(dict.fromkeys(k.strip() for k in value))
+
+
+@router.post("/courses/{course_id}/topics", status_code=201)
+def create_topic(course_id: UUID, data: TopicRequest, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course = lock_course(db, user, course_id, data.expected_revision)
+    topic = Topic(course_id=course_id, **data.model_dump(exclude={"expected_revision"}))
+    course.revision += 1
+    course.evaluation_profile, course.evaluation_overrides = "general", {}
+    db.add_all([course, topic]); db.flush()
+    db.add(AuditEvent(actor_id=user.id, action="topic.create", object_id=topic.id))
+    db.commit()
+    return {"topic": topic, "course_revision": course.revision}
+
+
+@router.put("/courses/{course_id}/topics/{topic_id}")
+def update_topic(course_id: UUID, topic_id: UUID, data: TopicRequest,
+    user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course = lock_course(db, user, course_id, data.expected_revision)
+    topic = db.get(Topic, topic_id)
+    if not topic or topic.course_id != course_id:
+        raise HTTPException(404, "TOPIC_NOT_FOUND")
+    topic.title, topic.keywords = data.title, data.keywords
+    course.revision += 1
+    course.evaluation_profile, course.evaluation_overrides = "general", {}
+    db.add_all([topic, course])
+    db.add(AuditEvent(actor_id=user.id, action="topic.update", object_id=topic.id))
+    db.commit()
+    return {"topic": topic, "course_revision": course.revision}
+
+
+class ActiveCourseRequest(BaseModel):
+    course_id: UUID
+
+
+@router.put("/me/active-course")
+def active_course(data: ActiveCourseRequest, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course_access(db, user, data.course_id)
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"), {"key": str(user.id)})
+    profile = db.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first() or UserProfile(user_id=user.id)
+    profile.preferences = {**profile.preferences, "active_course_id": str(data.course_id)}
+    db.add(profile); db.commit()
+    return {"course_id": data.course_id}
 
 
 class ChatRequest(BaseModel):
@@ -173,7 +303,7 @@ class QuestionRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     hint: str = Field(min_length=1, max_length=2000)
     explanation: str = Field(min_length=1, max_length=4000)
-    answer_type: Literal["integer_set", "boolean"]
+    answer_type: AnswerType
     grading_spec: dict
     source_version_id: UUID
 
@@ -248,7 +378,8 @@ def start_practice(data: PracticeRequest, user: User = Depends(current_user), db
     db.add(PracticeSessionItem(session_id=practice.id, question_id=question.id, question_version=question.version))
     db.commit()
     return {"session_id": practice.id, "question": {"id": question.id, "version": question.version,
-        "prompt": question.prompt, "answer_type": question.answer_type}}
+        "prompt": question.prompt, "answer_type": question.answer_type,
+        "answer_config": student_answer_config(question.answer_type, question.grading_spec)}}
 
 
 @router.post("/practice/{session_id}/hint")
@@ -296,13 +427,14 @@ def answer(session_id: UUID, data: AnswerRequest, user: User = Depends(current_u
     if not source or source.status != "published":
         raise HTTPException(409, "SOURCE_WITHDRAWN")
     correct = grade(question.answer_type, question.grading_spec, data.answer)
-    result = {"correct": correct, "score": int(correct), "score_status": "graded",
-        "hints_used": item.hints_used, "explanation": question.explanation,
+    score_status = "pending_review" if correct is None else "graded"
+    result = {"correct": correct, "score": None if correct is None else int(correct), "score_status": score_status,
+        "hints_used": item.hints_used, "explanation": "รอครูตรวจคำตอบ" if correct is None else question.explanation,
         "source_version_id": question.source_version_id, "question_version": item.question_version}
     db.add(Attempt(user_id=user.id, session_id=session_id, question_id=question.id,
         question_version=item.question_version, submission_id=data.submission_id,
         answer={"text": data.answer, "result": result | {"source_version_id": str(question.source_version_id)}},
-        score=int(correct), hints_used=item.hints_used))
+        score=int(bool(correct)), score_status=score_status, hints_used=item.hints_used))
     practice.state = "completed"
     db.add(practice)
     db.commit()
@@ -314,11 +446,68 @@ def progress(course_id: UUID, user: User = Depends(current_user), db: Session = 
     course_access(db, user, course_id)
     attempts = db.exec(select(Attempt).join(PracticeSession).where(Attempt.user_id == user.id,
         PracticeSession.course_id == course_id)).all()
-    independent = [a for a in attempts if a.hints_used == 0]
+    graded = [a for a in attempts if a.score_status == "graded"]
+    independent = [a for a in graded if a.hints_used == 0]
     return {"attempts": len(attempts), "independent_attempts": len(independent),
         "independent_correct": sum(a.score == a.max_score for a in independent),
-        "with_hints": len(attempts) - len(independent), "enough_evidence": len(independent) >= 3,
+        "with_hints": sum(a.hints_used > 0 for a in attempts),
+        "pending_review": len(attempts) - len(graded), "enough_evidence": len(independent) >= 3,
         "recommendation": "ทบทวนข้อที่ผิดและลองโจทย์ใหม่" if len(independent) >= 3 else "ฝึกทำเองอย่างน้อย 3 ข้อก่อนแนะนำระดับ"}
+
+
+@router.get("/practice/results")
+def practice_results(course_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course_access(db, user, course_id)
+    rows = db.exec(select(Attempt, Question).join(Question, Attempt.question_id == Question.id)
+        .join(Topic, Question.topic_id == Topic.id).where(Topic.course_id == course_id, Attempt.user_id == user.id)
+        .order_by(Attempt.created_at.desc()).limit(100)).all()
+    return [{"id": a.id, "prompt": q.prompt, "answer": a.answer["text"], "result": a.answer["result"]} for a, q in rows]
+
+
+@router.get("/courses/{course_id}/reviews")
+def pending_reviews(course_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course_access(db, user, course_id, True)
+    rows = db.exec(select(Attempt, Question, User).join(Question, Attempt.question_id == Question.id)
+        .join(Topic, Question.topic_id == Topic.id).join(User, Attempt.user_id == User.id)
+        .where(Topic.course_id == course_id, Attempt.score_status == "pending_review")
+        .order_by(Attempt.created_at).limit(100)).all()
+    return [{"id": a.id, "student": u.display_name, "prompt": q.prompt, "answer": a.answer["text"],
+        "criteria": q.grading_spec.get("criteria"), "explanation": q.explanation,
+        "source_version_id": q.source_version_id, "hints_used": a.hints_used} for a, q, u in rows]
+
+
+class GradeRequest(BaseModel):
+    score: float = Field(ge=0, le=1, allow_inf_nan=False)
+    feedback: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/courses/{course_id}/reviews/{attempt_id}")
+def review_answer(course_id: UUID, attempt_id: UUID, data: GradeRequest,
+    user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course_access(db, user, course_id, True)
+    attempt = db.exec(select(Attempt).where(Attempt.id == attempt_id).with_for_update()).first()
+    if not attempt:
+        raise HTTPException(404, "ATTEMPT_NOT_FOUND")
+    question = db.get(Question, attempt.question_id)
+    topic = db.get(Topic, question.topic_id)
+    if topic.course_id != course_id:
+        raise HTTPException(403, "ATTEMPT_COURSE_MISMATCH")
+    if question.answer_type != "manual" or attempt.score_status != "pending_review":
+        raise HTTPException(409, "ALREADY_GRADED")
+    if attempt.user_id == user.id or not data.feedback.strip():
+        raise HTTPException(400, "INDEPENDENT_TEACHER_FEEDBACK_REQUIRED")
+    source = db.get(DocumentVersion, question.source_version_id)
+    if not source or source.status != "published":
+        raise HTTPException(409, "SOURCE_WITHDRAWN")
+    attempt.score, attempt.score_status = data.score, "graded"
+    result = {**attempt.answer["result"], "score": data.score, "correct": data.score == 1,
+        "score_status": "graded", "explanation": question.explanation, "feedback": data.feedback.strip(),
+        "reviewer_id": str(user.id), "reviewed_at": utc_now().isoformat()}
+    attempt.answer = {**attempt.answer, "result": result}
+    db.add(attempt)
+    db.add(AuditEvent(actor_id=user.id, action="attempt.grade", object_id=attempt.id))
+    db.commit()
+    return result
 
 
 class PlanRequest(BaseModel):
@@ -452,10 +641,11 @@ def course_progress(course_id: UUID, user: User = Depends(current_user), db: Ses
         .join(Topic, Question.topic_id == Topic.id).where(Topic.course_id == course_id)).all()
     summary = {}
     for attempt, topic in rows:
-        item = summary.setdefault(str(topic.id), {"topic": topic.title, "attempts": 0, "independent_correct": 0, "with_hints": 0})
+        item = summary.setdefault(str(topic.id), {"topic": topic.title, "attempts": 0, "independent_correct": 0, "with_hints": 0, "pending_review": 0})
         item["attempts"] += 1
-        item["independent_correct"] += int(attempt.hints_used == 0 and attempt.score == attempt.max_score)
+        item["independent_correct"] += int(attempt.score_status == "graded" and attempt.hints_used == 0 and attempt.score == attempt.max_score)
         item["with_hints"] += int(attempt.hints_used > 0)
+        item["pending_review"] += int(attempt.score_status == "pending_review")
     return list(summary.values())
 
 

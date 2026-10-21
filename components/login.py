@@ -68,7 +68,7 @@ def line_login(data: LoginRequest, db: Session = Depends(get_session)):
     # Serialize first login for this identity without exposing tokens in logs.
     from sqlalchemy import text
     identity_key = f"{LINE_PROVIDER_ID}:{claims['sub']}"
-    db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": identity_key})
+    db.exec(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), params={"key": identity_key})
     identity = db.exec(select(LineIdentity).where(LineIdentity.provider_id == LINE_PROVIDER_ID,
         LineIdentity.line_sub == claims["sub"])).first()
     if identity:
@@ -97,8 +97,14 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
             course = course_access(db, user, membership.course_id)
         except HTTPException:
             continue
-        courses.append({"id": course.id, "title": course.title, "role": membership.role})
-    return {"id": user.id, "display_name": user.display_name, "timezone": user.timezone, "courses": courses}
+        courses.append({"id": course.id, "title": course.title, "role": membership.role, "school_id": course.school_id, "subject": course.subject})
+    from db.models import UserProfile
+    profile = db.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
+    selected = profile.preferences.get("active_course_id") if profile else None
+    if selected not in {str(c["id"]) for c in courses}:
+        selected = None
+    return {"id": user.id, "display_name": user.display_name, "timezone": user.timezone, "courses": courses,
+        "active_course_id": selected}
 
 
 @router.post("/auth/logout")

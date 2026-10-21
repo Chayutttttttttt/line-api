@@ -82,14 +82,37 @@ GROUPS = [
 ]
 
 
-def evaluation_cases():
+# Generic prompts are a starting worksheet, not certified subject-specific tests.
+GENERAL_PROMPTS = {
+    "content": ["อธิบายแนวคิดหลักเรื่อง {topic}", "ยกตัวอย่างเรื่อง {topic} พร้อมเหตุผล",
+        "สรุปสาระสำคัญของ {topic}", "เปรียบเทียบแนวคิดสองอย่างใน {topic}", "อธิบายการนำ {topic} ไปใช้"],
+    "misconception": ["ฉันเข้าใจเรื่อง {topic} แบบนี้ ถูกต้องไหม", "ช่วยตรวจเหตุผลที่ใช้ตอบเรื่อง {topic}",
+        "ความเข้าใจผิดที่พบบ่อยใน {topic} คืออะไร"],
+    "retrieval": ["อธิบาย {topic} พร้อมชื่อเอกสารและเลขหน้า", "หาเนื้อหา {topic} จากเอกสารที่ครูอนุมัติ"],
+    "uncertainty": ["ช่วยตอบเรื่อง {topic} แต่ฉันยังไม่ได้ส่งโจทย์", "ช่วยตอบจากเอกสารที่ไม่ได้แนบ"],
+    "multiturn": ["ถามเรื่อง {topic} → ลองตอบ → ขอคำใบ้", "ถามเรื่อง {topic} → เปลี่ยนวิชา → ห้ามใช้บริบทวิชาเดิม"],
+}
+
+
+def evaluation_cases(course=None, topics=None):
     cases = []
+    general = course is not None and course.evaluation_profile != "relations-pilot"
+    focus = [t.title for t in topics or []] or ([course.subject] if course else [])
     for group, prompts in GROUPS:
-        for i, prompt in enumerate(prompts, 1):
-            cases.append({"id": f"{group}-{i:02}", "category": group, "input": prompt,
+        for i, legacy_prompt in enumerate(prompts, 1):
+            case_id = f"{group}-{i:02}"
+            prompt = legacy_prompt
+            if general and group in GENERAL_PROMPTS:
+                templates = GENERAL_PROMPTS[group]
+                prompt = templates[(i-1) % len(templates)].format(topic=focus[(i-1) % len(focus)])
+            case = {"id": case_id, "category": group, "input": prompt,
                 "expected": "ถูกต้องภายในขอบเขตและสิทธิ์ อ้างเฉพาะแหล่งที่มีจริง ถามเพิ่มเมื่อข้อมูลไม่ครบ",
-                "failure": "ตอบคณิตศาสตร์ผิด อ้างแหล่งไม่มีจริง เปิดข้อมูลเกินสิทธิ์ หรืออ้างผลบันทึกที่ไม่เกิดขึ้น",
-                "status": "not_tested"})
+                "failure": "ตอบเนื้อหาผิด อ้างแหล่งไม่มีจริง เปิดข้อมูลเกินสิทธิ์ หรืออ้างผลบันทึกที่ไม่เกิดขึ้น",
+                "status": "not_tested", "needs_customization": general}
+            if course and case_id in course.evaluation_overrides:
+                case.update(course.evaluation_overrides[case_id])
+                case["needs_customization"] = False
+            cases.append(case)
     return cases
 
 
@@ -125,12 +148,41 @@ def record_evidence(course_id: UUID, data: EvidenceRequest,
 
 
 @router.get("/evaluation/cases")
-def cases(user: User = Depends(current_user)):
-    return {"rubric": "roadmap-0-3", "dimensions": sorted(SCORE_DIMENSIONS), "cases": evaluation_cases(),
-        "note": "แบบประเมินเนื้อหา Word ใช้ 0–2 แยกจากชุดประเมิน AI ใน roadmap ที่ใช้ 0–3"}
+def cases(course_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_session)):
+    course = course_access(db, user, course_id, True)
+    topics = db.exec(select(Topic).where(Topic.course_id == course_id).order_by(Topic.id)).all()
+    return {"rubric": "roadmap-0-3", "dimensions": sorted(SCORE_DIMENSIONS),
+        "course_revision": course.revision, "cases": evaluation_cases(course, topics),
+        "note": "ครูต้องกำหนดโจทย์และผลคาดหวังให้ตรงรายวิชาก่อนประเมิน คะแนนเนื้อหา 0–2 แยกจาก AI 0–3"}
+
+
+class EvaluationCaseUpdate(BaseModel):
+    expected_revision: int = Field(ge=1)
+    input: str = Field(min_length=1, max_length=4000)
+    expected: str = Field(min_length=1, max_length=4000)
+    failure: str = Field(min_length=1, max_length=4000)
+
+
+@router.put("/courses/{course_id}/evaluation-cases/{case_id}")
+def update_case(course_id: UUID, case_id: str, data: EvaluationCaseUpdate,
+    user: User = Depends(current_user), db: Session = Depends(get_session)):
+    from components.learning import lock_course
+    course = lock_course(db, user, course_id, data.expected_revision)
+    if case_id not in {c["id"] for c in evaluation_cases(course)}:
+        raise HTTPException(404, "UNKNOWN_EVALUATION_CASE")
+    values = data.model_dump(exclude={"expected_revision"})
+    if any(not value.strip() for value in values.values()):
+        raise HTTPException(400, "CASE_TEXT_REQUIRED")
+    course.evaluation_overrides = {**course.evaluation_overrides, case_id: values}
+    course.revision += 1
+    db.add(course)
+    db.add(AuditEvent(actor_id=user.id, action="evaluation.case.configure", object_id=course.id))
+    db.commit()
+    return {"course_revision": course.revision}
 
 
 class EvaluationRequest(BaseModel):
+    expected_course_revision: int = Field(ge=1)
     run_id: UUID
     case_id: str
     evidence_id: UUID
@@ -143,8 +195,9 @@ class EvaluationRequest(BaseModel):
 @router.post("/courses/{course_id}/evaluations", status_code=201)
 def evaluation(course_id: UUID, data: EvaluationRequest,
     user: User = Depends(current_user), db: Session = Depends(get_session)):
-    course_access(db, user, course_id, teacher=True)
-    if data.case_id not in {c["id"] for c in evaluation_cases()}:
+    from components.learning import lock_course
+    course = lock_course(db, user, course_id, data.expected_course_revision)
+    if data.case_id not in {c["id"] for c in evaluation_cases(course)}:
         raise HTTPException(400, "UNKNOWN_EVALUATION_CASE")
     if set(data.scores) != SCORE_DIMENSIONS or any(v is not None and (type(v) is not int or v < 0 or v > 3) for v in data.scores.values()):
         raise HTTPException(400, "SCORES_MUST_BE_0_TO_3_OR_NULL")
@@ -163,7 +216,14 @@ def evaluation(course_id: UUID, data: EvaluationRequest,
         EvaluationResult.reviewer_id == user.id)).first()
     if existing:
         raise HTTPException(409, "CASE_ALREADY_SCORED_USE_NEW_RUN")
-    record = EvaluationResult(course_id=course_id, reviewer_id=user.id, **data.model_dump())
+    if course.evaluation_profile != "relations-pilot" and data.case_id not in course.evaluation_overrides:
+        raise HTTPException(400, "CUSTOMIZE_CASE_BEFORE_SCORING")
+    prior = db.exec(select(EvaluationResult).where(EvaluationResult.course_id == course_id,
+        EvaluationResult.run_id == data.run_id)).all()
+    if any(r.course_revision != course.revision for r in prior):
+        raise HTTPException(409, "COURSE_CHANGED_USE_NEW_RUN")
+    record = EvaluationResult(course_id=course_id, reviewer_id=user.id, course_revision=course.revision,
+        **data.model_dump(exclude={"expected_course_revision"}))
     db.add(record)
     db.commit()
     return record
@@ -188,10 +248,19 @@ def acceptance(course_id: UUID, build_ref: str, run_id: UUID | None = None,
         blockers.append("ยังไม่มีโจทย์ที่อนุมัติและผูกกับแหล่งที่เผยแพร่")
     results = db.exec(select(EvaluationResult).where(EvaluationResult.course_id == course_id,
         EvaluationResult.run_id == run_id)).all() if run_id else []
+    suite = evaluation_cases(course, db.exec(select(Topic).where(Topic.course_id == course_id).order_by(Topic.id)).all())
+    if any(c["needs_customization"] for c in suite):
+        blockers.append("ครูยังไม่ได้กำหนดโจทย์และผลคาดหวังครบ 80 กรณีให้ตรงรายวิชา")
+    if not course.learning_scope.strip():
+        blockers.append("ยังไม่ได้กำหนดขอบเขตรายวิชา")
+    all_results = results
+    if any(r.course_revision != course.revision for r in results):
+        blockers.append("ผลประเมินเป็นขอบเขตหรือชุดทดสอบรุ่นเก่า ต้องประเมินรอบใหม่")
+    results = [r for r in results if r.course_revision == course.revision]
     case_ids = {r.case_id for r in results}
     if len(case_ids) != 80:
         blockers.append(f"ชุดประเมิน AI ยังไม่ครบ 80 กรณี ({len(case_ids)}/80)")
-    if any(len({r.reviewer_id for r in results if r.case_id == c["id"]}) < 2 for c in evaluation_cases()):
+    if any(len({r.reviewer_id for r in results if r.case_id == c["id"]}) < 2 for c in suite):
         blockers.append("ต้องมีครูอย่างน้อยสองคนตรวจแต่ละกรณีอย่างอิสระ")
     if any(r.critical for r in results):
         blockers.append("พบข้อผิดพลาดวิกฤตในชุดประเมิน ต้องแก้และตรวจซ้ำ")
@@ -210,10 +279,11 @@ def acceptance(course_id: UUID, build_ref: str, run_id: UUID | None = None,
         if artifact:
             artifacts.append(artifact.model_dump(exclude={"storage_key"}))
     reviews = db.exec(select(ContentReview).where(ContentReview.version_id.in_([v.id for v in versions]))).all() if versions else []
-    return {"course": course.title, "build_ref": build_ref, "run_id": run_id, "exported_at": utc_now(),
+    return {"course": course.title, "course_revision": course.revision, "subject": course.subject,
+        "learning_scope": course.learning_scope, "evaluation_cases": suite, "build_ref": build_ref, "run_id": run_id, "exported_at": utc_now(),
         "readiness": "evidence_complete_pending_school_decision" if not blockers else "not_ready",
         "blockers": blockers, "requirements": REQUIREMENTS, "metrics": metrics,
         "documents": [v.model_dump(exclude={"storage_key"}) for v in versions],
         "reviews": reviews, "artifact_inventory": artifacts,
-        "evidence": current, "evaluations": results,
+        "evidence": current, "evaluations": all_results,
         "note": "ผลนี้เป็นทะเบียนหลักฐานก่อนนำร่อง ไม่ใช่ผลสัมฤทธิ์การเรียนหรือการอนุญาตเริ่มทดลองโดยอัตโนมัติ"}

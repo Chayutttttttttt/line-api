@@ -90,7 +90,7 @@ export default function LineLoginButton() {
         )}
         <span>{label}</span>
       </button>
-      {status === "success" && <Link href="/" className="mt-4 block text-center font-semibold text-brand-blue underline">เปิดผู้ช่วยคณิตศาสตร์</Link>}
+      {status === "success" && <Link href="/" className="mt-4 block text-center font-semibold text-brand-blue underline">เปิดผู้ช่วยเรียน</Link>}
       <p className="sr-only" role="status">{label}</p>
       {status === "error" ? (
         <p id={messageId} role="alert" className="mt-3 rounded-xl border border-danger/25 bg-[#FFF5F5] p-3 text-sm leading-relaxed text-[#A52D2D]">

@@ -22,7 +22,7 @@ from components.login import router as auth_router
 from config import CORS_ORIGINS, MAX_UPLOAD_BYTES, PORT
 from db.database import engine
 
-app = FastAPI(title="LINE Math pilot API", version="0.2.0")
+app = FastAPI(title="LINE Learning API", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization", "Idempotency-Key"],
