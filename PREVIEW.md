@@ -1,3 +1,13 @@
+# Preview บันทึกคำอธิบายโค้ดใน Obsidian
+
+อัปเดต 25 ตุลาคม 2569: เขียนโน้ตภาษาไทยอธิบายสถาปัตยกรรม โครงสร้างไฟล์ ลำดับงานหลัก ฐานข้อมูล LIFF วิธีเริ่มรัน และข้อจำกัดของโปรเจกต์ลงในหมวด `01 Project/line-api` ของ Obsidian vault
+
+- ไฟล์ที่ได้รับผล: `Documents/Obsidian Vault/01 Project/line-api/อธิบายโค้ด LINE Learning.md` (นอก repository) และ `PREVIEW.md`
+- วิธีใช้: เปิดโน้ตใน Obsidian ที่หมวด `01 Project → line-api`; ตารางและ Mermaid ช่วยไล่โครงสร้างระบบ
+- ไม่มีการแก้โค้ดแอปหรือไฟล์ generated
+
+## ประวัติ preview ก่อนหน้า
+
 # Preview ลบชุดทดสอบอัตโนมัติ
 
 อัปเดต 25 ตุลาคม 2569: ลบชุด pytest ของ backend และรายการ dependencies สำหรับทดสอบ พร้อมเอาคำสั่งรัน pytest ออกจากคู่มือ
