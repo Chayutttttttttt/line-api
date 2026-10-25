@@ -1,3 +1,23 @@
+# Preview ลบชุดทดสอบอัตโนมัติ
+
+อัปเดต 25 ตุลาคม 2569: ลบชุด pytest ของ backend และรายการ dependencies สำหรับทดสอบ พร้อมเอาคำสั่งรัน pytest ออกจากคู่มือ
+
+- ไฟล์ที่ได้รับผล: ลบ `tests/conftest.py`, `tests/test_pilot.py`, `tests/test_subjects.py`, `requirements-dev.txt`; ปรับ `README.md`, `.dockerignore` และ `PREVIEW.md`
+- ยังใช้คำสั่ง lint, TypeScript check และ build ฝั่ง LIFF ตาม `README.md` ได้
+- ชุดประเมิน AI 80 กรณีและบันทึกหลักฐานตรวจรับยังเป็นฟีเจอร์ใช้งานจริงของแอป
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview ติดตั้ง Python dependencies
+
+อัปเดต 25 ตุลาคม 2569: ติดตั้งแพ็กเกจจาก `requirements.txt` ลงใน `.venv` ของโปรเจกต์ (Python 3.14.8) สำเร็จ โดยไม่ได้แก้รายการ dependencies หรือโค้ดแอป
+
+- ไฟล์ที่ได้รับผล: `.venv/` (สภาพแวดล้อมในเครื่องและถูกละเว้นโดย Git), `PREVIEW.md`
+- ตรวจสอบ: `pip check` ไม่พบข้อขัดแย้ง และ import ไลบรารีหลักทั้ง 14 รายการได้
+- วิธีใช้: เรียก Python ผ่าน `.venv/bin/python` หรือเปิดใช้งานด้วย `source .venv/bin/activate`
+
+## ประวัติ preview ก่อนหน้า
+
 # Preview รองรับรายวิชาได้อิสระบนระบบเดิม
 
 อัปเดต 21 ตุลาคม 2569: ปรับ LINE Learning ให้ครูกำหนดรายวิชาได้เอง โดยใช้ LINE channels, Railway API/worker, PostgreSQL และ private bucket เดิม

@@ -105,17 +105,13 @@ Migration ใหม่ `20261021_multisubject` เพิ่มข้อมูล
 
 ไฟล์ต้นฉบับที่ให้มายังไม่ถูกอัปโหลดไป Railway เนื่องจากบริการออฟไลน์ และไม่มีการอนุมัติเนื้อหาแทนครู `RelFnc.pdf` ที่แบบฟอร์มอ้างถึงไม่ได้แนบมาด้วย
 
-## ทดสอบ
+## ตรวจคุณภาพและ build ฝั่ง LIFF
 
 ```bash
-.venv/bin/python -m pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q
 npm --prefix liff run lint
 node liff/node_modules/typescript/bin/tsc --project liff/tsconfig.json --noEmit --incremental false
 npm --prefix liff run build -- --webpack
 ```
-
-pytest สร้าง PostgreSQL/pgvector ชั่วคราวด้วย pgserver และ **แทน DATABASE_URL ก่อน import แอป** ไม่แตะฐาน Railway การทดสอบ LINE/AI/S3 ใช้ stub ไม่ส่งข้อความจริง จำนวนกรณี automated tests ไม่ใช่ผลประเมิน AI 80 กรณีโดยครู
 
 ## ข้อจำกัดที่ต้องตรวจจริงก่อนนำร่อง
 
