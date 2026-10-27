@@ -1,4 +1,4 @@
-"""Course-scoped ingestion, teacher review and private versioned downloads."""
+"""Course-scoped document ingestion, direct source-ID retrieval and private downloads."""
 import hashlib
 import io
 import re
@@ -22,6 +22,9 @@ from db.database import get_session
 from db.models import (AuditEvent, Chunk, ContentReview, Document, DocumentVersion, Job, Topic, User, utc_now)
 
 router = APIRouter(tags=["documents"])
+# Legacy teaching files in "review" are immediately usable; new ones become published
+# after successful extraction. Evidence files remain private and are never AI sources.
+TEACHING_READY_STATUSES = ("review", "published")
 CHECKLIST = {
     "scope": "ขอบเขตและรายวิชาถูกต้อง",
     "definitions": "นิยาม แนวคิด และข้อเท็จจริงของรายวิชาถูกต้อง",
@@ -49,8 +52,9 @@ def version_access(db: Session, user: User, version_id: UUID, teacher=False, loc
     document = db.get(Document, version.document_id)
     course_access(db, user, document.course_id, teacher)
     if not teacher:
-        # Students cannot view review material, withdrawn sources or evidence.
-        if document.purpose != "teaching" or version.status != "published":
+        # Only course members may access extracted teaching documents.
+        # Evidence, uploads still processing, failed and withdrawn versions stay private.
+        if document.purpose != "teaching" or version.status not in TEACHING_READY_STATUSES:
             raise HTTPException(403, "DOCUMENT_NOT_PUBLISHED")
     return document, version
 
@@ -98,7 +102,8 @@ def ingest(db: Session, version_id: UUID):
             if part:
                 db.add(Chunk(version_id=version.id, ordinal=ordinal, page_no=page_no, text=part))
                 ordinal += 1
-    version.status = "review"
+    # Teaching material is ready as soon as extraction succeeds: no approval gate.
+    version.status = "published" if db.get(Document, version.document_id).purpose == "teaching" else "review"
     version.revision += 1
     db.add(version)
 
@@ -164,7 +169,7 @@ def list_documents(course_id: UUID, user: User = Depends(current_user), db: Sess
         .where(Document.course_id == course_id).order_by(DocumentVersion.created_at.desc())).all()
     return [{"document_id": d.id, "title": d.title, "purpose": d.purpose,
         **v.model_dump(exclude={"storage_key"})} for d, v in rows
-        if teacher or (d.purpose == "teaching" and v.status == "published")]
+        if teacher or (d.purpose == "teaching" and v.status in TEACHING_READY_STATUSES)]
 
 
 @router.get("/documents/versions/{version_id}")
@@ -185,7 +190,7 @@ class ChunkEdit(BaseModel):
 def edit_chunk(version_id: UUID, chunk_id: UUID, data: ChunkEdit,
     user: User = Depends(current_user), db: Session = Depends(get_session)):
     _, version = version_access(db, user, version_id, teacher=True, lock=True)
-    if version.status != "review" or version.revision != data.expected_revision:
+    if version.status not in TEACHING_READY_STATUSES or version.revision != data.expected_revision:
         raise HTTPException(409, "VERSION_CONFLICT")
     chunk = db.get(Chunk, chunk_id)
     if not chunk or chunk.version_id != version_id:
@@ -276,12 +281,25 @@ def download(version_id: UUID, user: User = Depends(current_user), db: Session =
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(version.filename)}", "X-Content-Type-Options": "nosniff"})
 
 
-def search_materials(db: Session, user: User, course_id: UUID, query: str):
+def search_materials(db: Session, user: User, course_id: UUID, query: str,
+                     source_version_id: UUID | None = None):
     course_access(db, user, course_id)
-    # Exact lexical retrieval for the small pilot. No unapproved embeddings or shared cache.
-    rows = db.exec(select(Chunk, DocumentVersion, Document).join(DocumentVersion, Chunk.version_id == DocumentVersion.id)
-        .join(Document, DocumentVersion.document_id == Document.id).where(Document.course_id == course_id,
-            Document.purpose == "teaching", DocumentVersion.status == "published")).all()
+    # A caller-supplied PDF ID is never trusted: validate course, purpose and state.
+    if source_version_id is not None:
+        source = db.get(DocumentVersion, source_version_id)
+        document = db.get(Document, source.document_id) if source else None
+        if (not source or not document or document.course_id != course_id
+                or document.purpose != "teaching" or source.status not in TEACHING_READY_STATUSES):
+            raise HTTPException(404, "TEACHING_FILE_NOT_AVAILABLE")
+    # Read extracted text, not raw PDF bytes; never retrieve evidence/other courses.
+    statement = (select(Chunk, DocumentVersion, Document)
+        .join(DocumentVersion, Chunk.version_id == DocumentVersion.id)
+        .join(Document, DocumentVersion.document_id == Document.id)
+        .where(Document.course_id == course_id, Document.purpose == "teaching",
+               DocumentVersion.status.in_(TEACHING_READY_STATUSES)))
+    if source_version_id is not None:
+        statement = statement.where(DocumentVersion.id == source_version_id)
+    rows = db.exec(statement).all()
     def normalize(value):
         return unicodedata.normalize("NFC", value).casefold()
 
@@ -304,13 +322,20 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str):
         gram_score = shared / max(len(grams), 1) if shared >= 3 else 0
         score = direct * 3 + topic_match * 4 + (gram_score if gram_score >= .2 else 0)
         scored.append((score, chunk, version, document))
-    scored.sort(key=lambda row: (-row[0], str(row[1].id)))
-    return [{"chunk_id": str(c.id), "version_id": str(v.id), "document": d.title, "filename": v.filename,
-        "version": v.version, "page_no": c.page_no, "checksum": v.checksum, "text": c.text}
-        for score, c, v, d in scored[:5] if score > 0]
+    # For a selected PDF, permit general prompts (e.g. "สรุปไฟล์นี้")
+    # to fall back to its first pages if no exact keyword matches were found.
+    if source_version_id is not None and not any(score > 0 for score, *_ in scored):
+        scored.sort(key=lambda row: row[1].ordinal)
+    else:
+        scored.sort(key=lambda row: (-row[0], str(row[1].id)))
+    return [{"chunk_id": str(c.id), "document_id": str(d.id), "version_id": str(v.id),
+             "document": d.title, "filename": v.filename, "version": v.version,
+             "page_no": c.page_no, "checksum": v.checksum, "text": c.text}
+        for score, c, v, d in scored[:5] if score > 0 or source_version_id is not None]
 
 
 @router.get("/materials/search")
 def search(course_id: UUID, query: str = Query(min_length=1, max_length=2000),
+    source_version_id: UUID | None = None,
     user: User = Depends(current_user), db: Session = Depends(get_session)):
-    return search_materials(db, user, course_id, query)
+    return search_materials(db, user, course_id, query, source_version_id)
