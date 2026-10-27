@@ -3,6 +3,7 @@ from datetime import timedelta
 import hashlib
 import secrets
 from uuid import UUID
+import logging
 
 import requests
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -56,6 +57,12 @@ def line_login(data: LoginRequest, db: Session = Depends(get_session)):
         response = requests.post("https://api.line.me/oauth2/v2.1/verify",
             data={"id_token": data.id_token, "client_id": LINE_LOGIN_CHANNEL_ID}, timeout=10)
         if response.status_code != 200:
+            details = response.json()
+            logging.warning(
+                "LINE verify failed: status=%s reason=%s",
+                response.status_code,
+                details.get("error_description", "Unknown"),
+            )
             raise HTTPException(401, "INVALID_LINE_TOKEN")
         claims = response.json()
         if (claims.get("iss") != "https://access.line.me" or
