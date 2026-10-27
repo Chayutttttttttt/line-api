@@ -13,10 +13,10 @@ from sqlmodel import Session, select
 
 from components.documents import RevisionRequest
 from components.grading import AnswerType, grade, student_answer_config, validate_spec
-from components.login import course_access, current_user
+from components.login import course_access, current_user, is_global_admin
 from db.database import get_session
 from db.models import (Attempt, AuditEvent, AuthSession, Conversation, DocumentVersion, FeedbackReport,
-    Course, CourseMembership, SchoolMembership, IdempotencyRecord, Job, LearningPlan, LineIdentity, Message, MessageOutbox, PlanItem,
+    Course, CourseMembership, School, SchoolMembership, IdempotencyRecord, Job, LearningPlan, LineIdentity, Message, MessageOutbox, PlanItem,
     PracticeSession, PracticeSessionItem, Question, Reminder, Task, Topic, User, UserProfile, utc_now)
 
 router = APIRouter(tags=["learning"])
@@ -54,11 +54,14 @@ def create_course(data: CourseCreate, user: User = Depends(current_user), db: Se
     membership = db.exec(select(SchoolMembership).where(SchoolMembership.school_id == data.school_id,
         SchoolMembership.user_id == user.id, SchoolMembership.status == "active",
         SchoolMembership.role.in_(["teacher", "admin"]))).first()
-    if not membership:
+    if not membership and not is_global_admin(db, user.id):
         raise HTTPException(403, "SCHOOL_TEACHER_REQUIRED")
+    if not db.get(School, data.school_id):
+        raise HTTPException(404, "SCHOOL_NOT_FOUND")
     course = Course(**data.model_dump())
     db.add(course); db.flush()
-    db.add(CourseMembership(school_id=course.school_id, course_id=course.id, user_id=user.id, role="teacher"))
+    if membership:
+        db.add(CourseMembership(school_id=course.school_id, course_id=course.id, user_id=user.id, role="teacher"))
     db.add(AuditEvent(actor_id=user.id, action="course.create", object_id=course.id))
     db.commit()
     return course_info(course)
