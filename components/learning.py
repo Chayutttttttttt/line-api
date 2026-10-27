@@ -158,12 +158,21 @@ def active_course(data: ActiveCourseRequest, user: User = Depends(current_user),
 class ChatRequest(BaseModel):
     course_id: UUID
     text: str = Field(min_length=1, max_length=4000)
+    source_version_id: UUID | None = None  # optional exact PDF/document-version ID
 
 
 @router.post("/chat", status_code=202)
 def chat(data: ChatRequest, user: User = Depends(current_user), db: Session = Depends(get_session)):
     course_access(db, user, data.course_id)
-    job = Job(user_id=user.id, payload={"text": data.text, "course_id": str(data.course_id)})
+    if data.source_version_id is not None:
+        from components.documents import TEACHING_READY_STATUSES
+        from db.models import Document
+        version = db.get(DocumentVersion, data.source_version_id)
+        document = db.get(Document, version.document_id) if version else None
+        if not version or not document or document.course_id != data.course_id or document.purpose != "teaching" or version.status not in TEACHING_READY_STATUSES:
+            raise HTTPException(404, "TEACHING_FILE_NOT_AVAILABLE")
+    job = Job(user_id=user.id, payload={"text": data.text, "course_id": str(data.course_id),
+        "source_version_id": str(data.source_version_id) if data.source_version_id else None})
     db.add(job)
     db.commit()
     return {"job_id": job.id, "status": job.state}
