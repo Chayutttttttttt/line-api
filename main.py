@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.exceptions import HTTPException
 
+from components.admin import router as admin_router
 from components.acceptance import router as acceptance_router
 from components.documents import router as document_router
 from components.learning import router as learning_router
@@ -99,7 +100,7 @@ def health():
     return {"status": "ok"}
 
 
-for router in (line_router, auth_router, document_router, learning_router, acceptance_router):
+for router in (line_router, auth_router, admin_router, document_router, learning_router, acceptance_router):
     app.include_router(router)
 
 
