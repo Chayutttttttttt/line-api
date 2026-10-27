@@ -5,7 +5,7 @@ import { api, saveBlob } from "@/lib/api";
 
 type Version = { id: string; document_id: string; title: string; purpose: string; version: number; revision: number; status: string; filename: string; checksum: string; extraction_error: string | null };
 type Chunk = { id: string; text: string; page_no: number | null };
-type Detail = { version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
+type Detail = { document: { purpose: string }; version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
 type Report = { readiness: string; blockers: string[] };
 type Question = { id: string; prompt: string; status: string };
 type EvaluationCase = { id: string; input: string; expected: string; failure: string; needs_customization: boolean };
@@ -67,7 +67,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
       <div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
       {detail && <article className="space-y-4">
         <p className="break-all text-sm text-secondary">{detail.version.filename} · {detail.version.status}<br />รหัสไฟล์ (version_id): {detail.version.id}<br />SHA256 {detail.version.checksum}</p>
-        <p className="text-sm">{detail.version.purpose === "teaching" && ["review", "published"].includes(detail.version.status) ? "พร้อมใช้ถาม AI แล้ว" : "ไฟล์นี้ยังไม่พร้อมใช้ตอบ AI"}</p>
+        <p className="text-sm">{detail.document.purpose === "teaching" && ["review", "published"].includes(detail.version.status) ? "พร้อมใช้ถาม AI แล้ว" : "ไฟล์นี้ยังไม่พร้อมใช้ตอบ AI"}</p>
         {detail.version.extraction_error && <p role="alert">สกัดข้อความไม่สำเร็จ: {detail.version.extraction_error} โปรดใช้ PDF ที่มีข้อความหรืออัปโหลดรุ่นใหม่</p>}
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
         {detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
