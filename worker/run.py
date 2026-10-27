@@ -17,7 +17,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from agent.gemini import PROMPT_VERSION, generate_answer
-from components.documents import ingest, search_materials
+from components.documents import TEACHING_READY_STATUSES, ingest, search_materials
 from components.login import course_access
 from config import (CHANNEL_ACCESS_TOKEN, JOB_TIMEOUT_SECONDS, LINE_PROVIDER_ID,
     MAX_DAILY_AI_REQUESTS, MAX_JOB_ATTEMPTS)
@@ -102,7 +102,9 @@ def process_job(claim):
                             .order_by(Message.created_at.desc()).limit(6)).all()
                         history = [{"role": m.role, "text": m.text[:2000]} for m in reversed(messages)]
                     retrieval_query = " ".join([claim["payload"]["text"], *[m["text"] for m in history[-2:]]])
-                    chunks = search_materials(db, user, course_id, retrieval_query)
+                    source_version_id = claim["payload"].get("source_version_id")
+                    chunks = search_materials(db, user, course_id, retrieval_query,
+                        UUID(source_version_id) if source_version_id else None)
                     today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
                     count = len(db.exec(select(Job.id).where(Job.user_id == user.id, Job.kind == "ai_response",
                         Job.created_at >= today, Job.state.in_(["done", "running"]))).all())
@@ -126,7 +128,7 @@ def process_job(claim):
                     raise ValueError("COURSE_CHANGED_DURING_GENERATION")
             for citation in result.get("citations", []):
                 source = db.get(DocumentVersion, UUID(citation["version_id"]))
-                if not source or source.status != "published":
+                if not source or source.status not in TEACHING_READY_STATUSES:
                     raise ValueError("SOURCE_WITHDRAWN_DURING_GENERATION")
             conversation = db.exec(select(Conversation).where(Conversation.owner_id == user.id,
                 Conversation.course_id == course_id, Conversation.deleted_at == None)
@@ -137,7 +139,7 @@ def process_job(claim):
                 db.flush()
             db.add(Message(conversation_id=conversation.id, owner_id=user.id, role="user",
                 text=claim["payload"]["text"], line_message_id=claim["payload"].get("line_message_id")))
-            references = "\n".join(f"{c['document']} รุ่น {c['version']} หน้า {c['page_no']}" for c in result.get("citations", []))
+            references = "\n".join(f"{c['document']} รุ่น {c['version']} หน้า {c['page_no'] or '-'} (รหัสไฟล์: {c['version_id']})" for c in result.get("citations", []))
             answer = result["answer"] + (f"\n\nอ้างอิง\n{references}" if references else "")
             message = Message(conversation_id=conversation.id, owner_id=user.id, role="assistant", text=answer)
             db.add(message)
@@ -152,7 +154,7 @@ def process_job(claim):
                 "course_id": str(course_id) if course_id else None,
                 "course_revision": course_context["revision"] if course_id else None,
                 "usage": result.get("usage", {}), "citations": [
-                    {k: c[k] for k in ("chunk_id", "version_id", "checksum", "page_no")} for c in result.get("citations", [])]}
+                    {k: c[k] for k in ("chunk_id", "document_id", "version_id", "checksum", "page_no")} for c in result.get("citations", [])]}
             job.state, job.updated_at = "done", utc_now()
             db.add(job)
             if job.webhook_event_id:
@@ -269,7 +271,7 @@ def send_outbox():
             if valid:
                 for version_id in outbox.payload.get("version_ids", []):
                     source = db.get(DocumentVersion, UUID(version_id))
-                    valid = valid and bool(source and source.status == "published")
+                    valid = valid and bool(source and source.status in TEACHING_READY_STATUSES)
         except Exception:
             valid = False
         if not valid:
