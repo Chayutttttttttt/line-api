@@ -10,11 +10,13 @@ import {
 const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
 type Status = "idle" | "checking" | "loading" | "success" | "expired" | "reopen" | "error";
 import { LineReauthenticationRequired, verifyLineLogin } from "@/lib/api";
+import { getDashboardHref } from "@/lib/dashboardView";
 import Link from "next/link";
 
 export default function LineLoginButton() {
   const [status, setStatus] = useState<Status>(liffId ? "checking" : "idle");
   const [errorMessage, setErrorMessage] = useState("");
+  const [dashboardHref, setDashboardHref] = useState("/");
   const requestPending = useRef(false);
   const initialCheck = useRef<Promise<"success" | "idle" | "expired"> | null>(null);
   const messageId = useId();
@@ -38,7 +40,12 @@ export default function LineLoginButton() {
     });
 
     initialCheck.current.then(
-      (nextStatus) => { if (!cancelled) setStatus(nextStatus); },
+      (nextStatus) => {
+        if (!cancelled) {
+          setDashboardHref(getDashboardHref(window.location.search));
+          setStatus(nextStatus);
+        }
+      },
       (error: unknown) => {
         if (!cancelled) {
           setErrorMessage(error instanceof Error ? error.message : "เชื่อมต่อ LINE ไม่สำเร็จ");
@@ -116,7 +123,7 @@ export default function LineLoginButton() {
         )}
         <span>{label}</span>
       </button>
-      {status === "success" && <Link href="/" className="mt-4 block text-center font-semibold text-brand-blue underline">เปิดผู้ช่วยเรียน</Link>}
+      {status === "success" && <Link href={dashboardHref} className="mt-4 block text-center font-semibold text-brand-blue underline">เปิดผู้ช่วยเรียน</Link>}
       <p className="sr-only" role="status">{label}</p>
       {["expired", "reopen", "error"].includes(status) && (
         <p id={messageId} role="alert" className="mt-3 rounded-xl border border-danger/25 bg-[#FFF5F5] p-3 text-sm leading-relaxed text-[#A52D2D]">
