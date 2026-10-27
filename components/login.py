@@ -69,6 +69,12 @@ def line_login(data: LoginRequest, db: Session = Depends(get_session)):
             str(claims.get("aud")) != LINE_LOGIN_CHANNEL_ID or
             not isinstance(claims.get("exp"), (int, float)) or
             claims["exp"] <= utc_now().timestamp() or not claims.get("sub")):
+            details = response.json()
+            logging.warning(
+                "LINE verify failed: status=%s reason=%s",
+                response.status_code,
+                details.get("error_description", "Unknown"),
+            )
             raise HTTPException(401, "INVALID_LINE_TOKEN")
     except (requests.RequestException, ValueError):
         raise HTTPException(503, "LINE_TEMPORARILY_UNAVAILABLE") from None
