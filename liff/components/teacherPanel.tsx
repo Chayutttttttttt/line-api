@@ -13,7 +13,6 @@ const value = (form: FormData, key: string) => String(form.get(key) ?? "");
 
 export default function TeacherPanel({ courseId, mode }: { courseId: string; mode: "documents" | "acceptance" }) {
   const [versions, setVersions] = useState<Version[]>([]);
-  const [checklist, setChecklist] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<Detail | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -28,10 +27,10 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
 
   useEffect(() => {
     let active = true;
-    Promise.all([api<Version[]>(`/documents?course_id=${courseId}`), api<Record<string, string>>("/documents/checklist"),
+    Promise.all([api<Version[]>(`/documents?course_id=${courseId}`),
       api<Question[]>(`/questions?course_id=${courseId}`), api<{id: string; title: string}[]>(`/topics?course_id=${courseId}`),
       api<{cases: EvaluationCase[]; course_revision: number}>(`/evaluation/cases?course_id=${courseId}`)])
-      .then(([v, c, q, t, e]) => { if (active) { setVersions(v); setChecklist(c); setQuestions(q); setTopics(t); setCases(e.cases); setCourseRevision(e.course_revision); } })
+      .then(([v, q, t, e]) => { if (active) { setVersions(v); setQuestions(q); setTopics(t); setCases(e.cases); setCourseRevision(e.course_revision); } })
       .catch((e: Error) => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [courseId]);
@@ -53,35 +52,30 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
   }
 
   return <div className="space-y-5" aria-busy={busy}>
-    <h2 className="pilot-heading">{mode === "documents" ? "คลังเอกสารและการตรวจเนื้อหา" : "หลักฐานตรวจรับก่อนนำร่อง"}</h2>
+    <h2 className="pilot-heading">{mode === "documents" ? "คลังไฟล์บทเรียนสำหรับ AI" : "หลักฐานตรวจรับก่อนนำร่อง"}</h2>
     {error && <p role="alert" className="rounded-xl border border-danger p-3 text-red-800">{error}</p>}
     {message && <p role="status" className="rounded-xl bg-brand-mint p-3 break-all">{message}</p>}
     {mode === "documents" && <>
-      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId); if (!value(form, "document_id")) form.delete("document_id"); void run(async () => { const uploaded = await api<{ingestion_job_id: string}>("/documents", { method: "POST", body: form }); setMessage(`รับไฟล์แล้ว รอ worker สกัดข้อความ งาน ${uploaded.ingestion_job_id}`); target.reset(); await refresh(); }); }}>
+      <p className="text-sm text-secondary">ไฟล์เอกสารสอนใช้ถาม AI ได้หลัง Worker สกัดข้อความสำเร็จ ไม่ต้องอนุมัติ ส่วนไฟล์หลักฐานจะไม่ถูกนำไปตอบ AI</p>
+      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId); if (!value(form, "document_id")) form.delete("document_id"); void run(async () => { const uploaded = await api<{ingestion_job_id: string}>("/documents", { method: "POST", body: form }); setMessage(`รับไฟล์แล้ว รอ Worker สกัดข้อความ จากนั้นใช้ถาม AI ได้ทันที · งาน ${uploaded.ingestion_job_id}`); target.reset(); await refresh(); }); }}>
         <label>ชื่อเอกสาร<input name="title" required maxLength={255} className="pilot-input" /></label>
         <label>ประเภท<select name="purpose" className="pilot-input"><option value="teaching">เอกสารสอน</option><option value="evidence">หลักฐานและเอกสารโครงการ (ไม่ใช้ตอบ AI)</option></select></label>
         <label>เพิ่มรุ่นให้เอกสารเดิม<select name="document_id" className="pilot-input"><option value="">สร้างเอกสารใหม่</option>{versions.filter((v, i, all) => all.findIndex((x) => x.document_id === v.document_id) === i).map((v) => <option key={v.document_id} value={v.document_id}>{v.title}</option>)}</select></label>
         <label>ไฟล์ PDF, DOCX หรือ TXT ไม่เกิน 10 MB<input type="file" name="file" required accept=".pdf,.docx,.txt" className="pilot-input" /></label>
-        <button disabled={busy} className="pilot-button">อัปโหลดเพื่อตรวจ</button>
+        <button disabled={busy} className="pilot-button">อัปโหลดไฟล์ให้ AI อ่าน</button>
       </form>
       <div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
       {detail && <article className="space-y-4">
-        <p className="break-all text-sm text-secondary">{detail.version.filename} · {detail.version.status}<br />SHA256 {detail.version.checksum}</p>
+        <p className="break-all text-sm text-secondary">{detail.version.filename} · {detail.version.status}<br />รหัสไฟล์ (version_id): {detail.version.id}<br />SHA256 {detail.version.checksum}</p>
+        <p className="text-sm">{detail.version.purpose === "teaching" && ["review", "published"].includes(detail.version.status) ? "พร้อมใช้ถาม AI แล้ว" : "ไฟล์นี้ยังไม่พร้อมใช้ตอบ AI"}</p>
         {detail.version.extraction_error && <p role="alert">สกัดข้อความไม่สำเร็จ: {detail.version.extraction_error} โปรดใช้ PDF ที่มีข้อความหรืออัปโหลดรุ่นใหม่</p>}
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
         {detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
-          <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
-          <label>ข้อความที่สกัด<textarea name="text" required maxLength={10000} rows={7} defaultValue={chunk.text} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
-          {detail.version.status === "review" && <button className="pilot-secondary" disabled={busy}>บันทึกข้อความและเลขหน้า</button>}
+          <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
+          <label>ข้อความที่สกัด<textarea name="text" required maxLength={10000} rows={7} defaultValue={chunk.text} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
+          {["review", "published"].includes(detail.version.status) && <button className="pilot-secondary" disabled={busy}>บันทึกข้อความและเลขหน้า</button>}
         </form>)}
-        {detail.version.status === "review" && <form key={detail.version.revision} className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const checks = Object.fromEntries(Object.keys(checklist).map((key) => [key, form.has(key)])); void run(async () => { await api(`/documents/${detail.version.document_id}/publish`, { method: "POST", body: JSON.stringify({ version: detail.version.version, expected_revision: detail.version.revision, decision: value(form, "decision"), scope: value(form, "scope"), notes: value(form, "notes"), checklist: checks, rubric: Object.fromEntries(["correctness", "citations", "teaching", "scope"].map((key) => [key, Number(value(form, `rubric_${key}`))])) }) }); setMessage("บันทึกผลตรวจแล้ว"); await refresh(); }); }}>
-          <fieldset className="space-y-2"><legend className="mb-2 font-semibold">รายการตรวจตามแบบรับรองเนื้อหา</legend>{Object.entries(checklist).map(([key, label]) => <label key={key} className="flex items-start gap-3"><input type="checkbox" name={key} className="mt-1 size-4 shrink-0" />{label}</label>)}</fieldset>
-          <fieldset className="space-y-2"><legend className="font-semibold">คะแนนตรวจเนื้อหา 0–2 (อนุมัติต้องได้ 2 ทุกด้าน)</legend>{[["correctness", "ความถูกต้อง"], ["citations", "แหล่งอ้างอิง"], ["teaching", "การช่วยสอน"], ["scope", "การควบคุมขอบเขต"]].map(([key, label]) => <label className="block" key={key}>{label}<input type="number" min={0} max={2} name={`rubric_${key}`} className="pilot-input" /></label>)}</fieldset>
-          <label className="block">ขอบเขตอนุมัติ<select name="scope" className="pilot-input"><option value="prototype">ต้นแบบเท่านั้น</option><option value="pilot">เนื้อหาสำหรับกลุ่มนำร่อง</option></select></label>
-          <label className="block">ผลตรวจ<select name="decision" className="pilot-input"><option value="revise">ให้แก้ไข</option><option value="approve">อนุมัติ</option><option value="reject">ไม่อนุมัติ</option></select></label>
-          <label className="block">ข้อแก้ไขและเงื่อนไข<textarea name="notes" maxLength={5000} className="pilot-input" /></label><button className="pilot-button" disabled={busy}>บันทึกผลตรวจ</button>
-        </form>}
-        {detail.version.status === "published" && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
+        {["review", "published"].includes(detail.version.status) && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
         <h3 className="font-semibold">ประวัติผลตรวจ</h3>{detail.reviews.map((r) => <p key={r.id} className="rounded-xl bg-surface-soft p-3 text-sm break-all">{r.decision} · {r.scope} · {new Date(r.created_at).toLocaleString("th-TH")}<br />ผู้ตรวจ {r.reviewer_id}<br />{r.notes}<br />คะแนน 0–2: {Object.entries(r.rubric).map(([key, score]) => `${key} ${score}`).join(" · ")}</p>)}
       </article>}
       <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">จัดโจทย์และเฉลยสำหรับครู</summary><QuestionForm topics={topics} versions={versions} busy={busy} onSave={(data) => run(async () => {
@@ -136,7 +130,7 @@ function QuestionForm({ topics, versions, busy, onSave }: { topics: {id: string;
     void onSave({ topic_id: value(form, "topic"), source_version_id: value(form, "source"), prompt: value(form, "prompt"), hint: value(form, "hint"), explanation: value(form, "explanation"), answer_type: type, grading_spec: spec });
   }}>
     <label className="block">หัวข้อ<select name="topic" required className="pilot-input">{topics.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}</select></label>
-    <label className="block">แหล่งเอกสาร<select name="source" required className="pilot-input">{versions.filter((v) => v.purpose === "teaching" && v.status === "published").map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label>
+    <label className="block">แหล่งเอกสาร<select name="source" required className="pilot-input">{versions.filter((v) => v.purpose === "teaching" && ["review", "published"].includes(v.status)).map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label>
     {[["prompt", "โจทย์"], ["hint", "คำใบ้"], ["explanation", "เฉลย / แนวคำตอบสำหรับครู"]].map(([name, label]) => <label className="block" key={name}>{label}<textarea required name={name} maxLength={2000} className="pilot-input" /></label>)}
     <label className="block">รูปแบบคำตอบ<select value={type} onChange={(e) => setType(e.target.value)} className="pilot-input">
       {[["multiple_choice", "ปรนัย"], ["boolean", "จริง / เท็จ"], ["numeric", "ตัวเลข"], ["short_text", "คำตอบสั้นตรงตามรายการ"], ["manual", "คำตอบอธิบาย — ครูตรวจ"], ["integer_set", "เซตจำนวนเต็ม"]].map(([id, label]) => <option key={id} value={id}>{label}</option>)}
