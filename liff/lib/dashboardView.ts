@@ -1,7 +1,7 @@
 /** Validated LIFF Rich Menu targets. Never navigate to arbitrary URLs from a query string. */
 export const DASHBOARD_VIEWS = [
   "ask", "tasks", "practice", "plans", "progress",
-  "documents", "acceptance", "course", "settings",
+  "documents", "acceptance", "course", "settings", "admin",
 ] as const;
 
 export type DashboardView = (typeof DASHBOARD_VIEWS)[number];
