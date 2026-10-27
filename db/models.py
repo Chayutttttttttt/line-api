@@ -62,6 +62,17 @@ class User(SQLModel, table=True):
     )
 
 
+class AdminUser(SQLModel, table=True):
+    """Global administrator: fixed by trusted one-time migration only."""
+    __tablename__ = "admin_users"
+
+    user_id: UUID = Field(foreign_key="users.id", primary_key=True)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
+
+
 # =========================================================
 # USER PROFILE
 # =========================================================
