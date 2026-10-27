@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 
 from config import LINE_LOGIN_CHANNEL_ID, LINE_PROVIDER_ID, SESSION_TTL_SECONDS
 from db.database import get_session
-from db.models import AuthSession, Course, CourseMembership, LineIdentity, SchoolMembership, User, utc_now
+from db.models import AdminUser, AuthSession, Course, CourseMembership, LineIdentity, SchoolMembership, User, utc_now
 
 router = APIRouter(tags=["auth"])
 
@@ -34,10 +34,22 @@ def current_user(authorization: str | None = Header(None), db: Session = Depends
     return user
 
 
+def is_global_admin(db: Session, user_id: UUID) -> bool:
+    return db.get(AdminUser, user_id) is not None
+
+
+def require_admin(user: User = Depends(current_user), db: Session = Depends(get_session)) -> User:
+    if not is_global_admin(db, user.id):
+        raise HTTPException(403, "ADMIN_REQUIRED")
+    return user
+
+
 def course_access(db: Session, user: User, course_id: UUID, teacher: bool = False) -> Course:
     course = db.get(Course, course_id)
     if not course:
         raise HTTPException(404, "COURSE_NOT_FOUND")
+    if is_global_admin(db, user.id):
+        return course
     cm = db.exec(select(CourseMembership).where(CourseMembership.course_id == course_id,
         CourseMembership.user_id == user.id, CourseMembership.status == "active")).first()
     sm = db.exec(select(SchoolMembership).where(SchoolMembership.school_id == course.school_id,
@@ -102,9 +114,14 @@ def line_login(data: LoginRequest, db: Session = Depends(get_session)):
 
 @router.get("/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
+    admin = is_global_admin(db, user.id)
     memberships = db.exec(select(CourseMembership).where(CourseMembership.user_id == user.id,
-        CourseMembership.status == "active")).all()
+        CourseMembership.status == "active")).all() if not admin else []
     courses = []
+    if admin:
+        for course in db.exec(select(Course).order_by(Course.title)).all():
+            courses.append({"id": course.id, "title": course.title, "role": "admin",
+                "school_id": course.school_id, "subject": course.subject})
     for membership in memberships:
         try:
             course = course_access(db, user, membership.course_id)
@@ -117,7 +134,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
     if selected not in {str(c["id"]) for c in courses}:
         selected = None
     return {"id": user.id, "display_name": user.display_name, "timezone": user.timezone, "courses": courses,
-        "active_course_id": selected}
+        "active_course_id": selected, "is_admin": admin}
 
 
 @router.post("/auth/logout")
