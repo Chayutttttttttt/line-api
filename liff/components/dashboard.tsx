@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, saveBlob } from "@/lib/api";
+import { initliff } from "@/lib/liff";
+import { getRequestedDashboardView, type DashboardView } from "@/lib/dashboardView";
 import TeacherPanel from "./teacherPanel";
 import CoursePanel from "./coursePanel";
 
@@ -14,7 +16,7 @@ type Practice = { session_id: string; question: { id: string; prompt: string; an
 type Plan = { plan: { id: string; state: string; revision: number; end_date: string }; items: { id: string; scheduled_at: string; minutes: number }[] };
 type Progress = { attempts: number; independent_attempts: number; independent_correct: number; with_hints: number; pending_review: number; recommendation: string };
 type Preferences = { reminders_enabled: boolean; quiet_start: number; quiet_end: number };
-type View = "ask" | "tasks" | "practice" | "plans" | "progress" | "documents" | "acceptance" | "course" | "settings";
+type View = DashboardView;
 const tabs: [View, string][] = [["ask", "ถามบทเรียน"], ["tasks", "งานของฉัน"], ["practice", "ฝึกโจทย์"], ["plans", "แผนอ่านสอบ"], ["progress", "ความก้าวหน้า"], ["documents", "เอกสารบทเรียน"], ["settings", "ตั้งค่า"]];
 const dateTime = (value: string) => new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(value));
 const field = (form: FormData, name: string) => String(form.get(name) ?? "");
@@ -24,6 +26,7 @@ export default function Dashboard() {
   const [me, setMe] = useState<Me | null>(null);
   const [courseId, setCourseId] = useState("");
   const [view, setView] = useState<View>("ask");
+  const [requestedView, setRequestedView] = useState<View | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -41,7 +44,28 @@ export default function Dashboard() {
 
   useEffect(() => {
     let active = true;
-    api<Me>("/me").then((user) => { if (active) { setMe(user); setCourseId(user.active_course_id ?? user.courses[0]?.id ?? ""); } }).catch((e: Error) => { if (active) setError(e.message); });
+    const loadAccount = async () => {
+      try {
+        // LINE carries Rich Menu parameters in liff.state until init resolves.
+        await initliff();
+        if (!active) return;
+        const requested = getRequestedDashboardView(window.location.search);
+        setRequestedView(requested);
+        const user = await api<Me>("/me");
+        if (!active) return;
+        const initialCourseId = user.active_course_id ?? user.courses[0]?.id ?? "";
+        const initialCourse = user.courses.find((c) => c.id === initialCourseId);
+        const restricted = requested === "course" || requested === "acceptance";
+        const isTeacher = initialCourse?.role === "teacher" || initialCourse?.role === "admin";
+        setMe(user);
+        setCourseId(initialCourseId);
+        // Deep links are navigation only; teacher views still require membership.
+        setView(requested && (!restricted || isTeacher) ? requested : "ask");
+      } catch (e) {
+        if (active) setError((e as Error).message);
+      }
+    };
+    void loadAccount();
     return () => { active = false; };
   }, []);
 
@@ -79,7 +103,7 @@ export default function Dashboard() {
   const course = me?.courses.find((c) => c.id === courseId);
   const teacher = course?.role === "teacher" || course?.role === "admin";
 
-  if (!me) return <main className="mx-auto w-full max-w-xl p-8"><h1 className="text-2xl font-bold text-brand-navy">ผู้ช่วยเรียน</h1><p className="my-4" role="status">{error || "กำลังตรวจสอบบัญชี LINE…"}</p><Link className="text-brand-blue underline" href="/login">เข้าสู่ระบบด้วย LINE</Link></main>;
+  if (!me) return <main className="mx-auto w-full max-w-xl p-8"><h1 className="text-2xl font-bold text-brand-navy">ผู้ช่วยเรียน</h1><p className="my-4" role="status">{error || "กำลังตรวจสอบบัญชี LINE…"}</p><Link className="text-brand-blue underline" href={requestedView ? `/login?view=${requestedView}` : "/login"}>เข้าสู่ระบบด้วย LINE</Link></main>;
 
   return <main className="mx-auto w-full max-w-5xl p-4 pb-16 sm:p-8">
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm text-secondary">LINE Learning · เตรียมความพร้อมก่อนนำร่อง</p><h1 className="text-2xl font-bold text-brand-navy">สวัสดี {me.display_name || "ผู้เรียน"}</h1></div><Link href="/login" className="text-sm text-brand-blue underline">บัญชี LINE</Link></header>
