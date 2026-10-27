@@ -41,7 +41,7 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
     await onChanged();
   }
 
-  async function run(action: () => Promise<void>, success: string) {
+  async function run(action: () => Promise<unknown>, success: string) {
     setBusy(true);
     setError("");
     setNotice("");
