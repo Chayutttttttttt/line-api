@@ -24,6 +24,7 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
   const [notice, setNotice] = useState("");
   const [schoolId, setSchoolId] = useState("");
   const [courseId, setCourseId] = useState("");
+  const [adminTab, setAdminTab] = useState<"schools" | "courses" | "users">("schools");
 
   useEffect(() => {
     let active = true;
@@ -65,8 +66,8 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
 
   return <div className="space-y-8" aria-busy={busy}>
     <div>
-      <h2 className="pilot-heading">ผู้ดูแลระบบ (Global Admin)</h2>
-      <p className="text-sm text-secondary">สิทธิ์จัดการทุกโรงเรียนและรายวิชา ตรวจสอบด้วยบัญชี LINE และ API ทุกครั้ง ไม่สามารถตั้งตนเองเป็น Admin ผ่านแบบฟอร์มได้</p>
+      <h2 className="pilot-heading">จัดการโรงเรียนและสมาชิก</h2>
+      <p className="text-sm text-secondary">สำหรับผู้ดูแลที่ได้รับสิทธิ์เท่านั้น เลือกหัวข้อที่ต้องการจัดการด้านล่าง</p>
     </div>
     {error && <p role="alert" className="rounded-xl border border-danger bg-red-50 p-3 text-red-800">{error}</p>}
     {notice && <p role="status" className="rounded-xl bg-brand-mint p-3">{notice}</p>}
@@ -83,8 +84,14 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
           </div>)}
       </div>
 
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold">1. โรงเรียน</h3>
+      <nav aria-label="เมนูผู้ดูแลระบบ" className="grid gap-2 sm:grid-cols-3">
+        {([["schools","โรงเรียน"],["courses","รายวิชาและสมาชิก"],["users","บัญชีผู้ใช้"]] as const).map(([id,label]) =>
+          <button key={id} type="button" className={adminTab === id ? "pilot-button" : "pilot-secondary"}
+            aria-current={adminTab === id ? "page" : undefined}
+            onClick={() => {setAdminTab(id);setError("");setNotice("");}}>{label}</button>)}
+      </nav>
+      {adminTab === "schools" && <section className="space-y-4">
+        <h3 className="text-lg font-semibold">โรงเรียน</h3>
         <form className="flex flex-wrap gap-2" onSubmit={(e) => {
           e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
           void run(async () => { await api("/admin/schools", {method:"POST",body:json({name:value(fields,"name")})}); form.reset(); }, "เพิ่มโรงเรียนแล้ว");
@@ -113,10 +120,9 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
             void run(() => api(`/admin/schools/${selectedSchool.id}`, {method:"DELETE"}), "ลบโรงเรียนว่างแล้ว");
           }}>ลบโรงเรียนที่ว่าง</button>
         </div>}
-      </section>
-
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold">2. รายวิชา</h3>
+      </section>}
+      {adminTab === "courses" && <section className="space-y-4">
+        <h3 className="text-lg font-semibold">รายวิชาและสมาชิก</h3>
         <form className="grid gap-3 rounded-xl border border-border p-4" onSubmit={(e) => {
           e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
           void run(async () => { await api("/admin/courses", {method:"POST",body:json({
@@ -184,10 +190,9 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
             void run(() => api(`/admin/courses/${selectedCourse.id}`, {method:"DELETE"}), "ลบรายวิชาที่ว่างแล้ว");
           }}>ลบรายวิชาที่ว่าง</button>
         </div>}
-      </section>
-
-      <section className="space-y-3">
-        <h3 className="text-lg font-semibold">3. บัญชีผู้ใช้</h3>
+      </section>}
+      {adminTab === "users" && <section className="space-y-3">
+        <h3 className="text-lg font-semibold">บัญชีผู้ใช้</h3>
         <p className="text-sm text-secondary">ผู้ใช้ต้อง Login ผ่าน LINE ก่อนจึงจะปรากฏในรายการนี้ การระงับบัญชีจะยกเลิก Session ที่มีอยู่</p>
         {data.users.map((user) => <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3">
           <div className="min-w-0">
@@ -205,7 +210,7 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
             }}>เปิดบัญชี</button>}
           </div>
         </div>)}
-      </section>
+      </section>}
     </>}
   </div>;
 }
