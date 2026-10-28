@@ -9,7 +9,9 @@ test("opens every supported Rich Menu target", () => {
   }
 });
 test("falls back safely for no view or unsupported destinations", () => {
-  assert.equal(getRequestedDashboardView("?view=ask"), "home");\n  assert.equal(getDashboardHref("?view=ask"), "/?view=home");\n  assert.equal(getRequestedDashboardView(""), null);
+  assert.equal(getRequestedDashboardView("?view=ask"), "home");
+  assert.equal(getDashboardHref("?view=ask"), "/?view=home");
+  assert.equal(getRequestedDashboardView(""), null);
   assert.equal(getDashboardHref(""), "/");
   for (const search of ["?view=../../admin", "?view=javascript:alert(1)", "?view=foo", "?view="]) {
     assert.equal(getRequestedDashboardView(search), null);
