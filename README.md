@@ -9,8 +9,8 @@
 - ตรวจ LINE ID token กับ LINE ก่อนสร้าง opaque bearer session เก็บเฉพาะ hash ของ session token ในฐานข้อมูล ไม่ print token บทบาทมาจากสมาชิกโรงเรียนและรายวิชาที่ผู้ดูแลเพิ่ม
 - รับ signed raw webhook ที่ `/webhook` และ `/webhooks/line` บันทึก event + job ในธุรกรรมเดียว และกัน event ซ้ำด้วย UNIQUE
 - SQL worker มี lease, retry, stale-worker fencing และจัดลำดับงานรายผู้ใช้ บันทึกคำตอบกับ outbox ในธุรกรรมเดียว Push ใช้ retry key เดิม สถานะ `accepted` หมายถึง LINE API รับ ไม่ใช่ส่งถึงหรืออ่านแล้ว
-- อัปโหลด PDF, DOCX, TXT สูงสุด 10 MB สกัดข้อความใน worker ตรวจ checksum แก้ข้อความ/เลขหน้า และบันทึกผลตรวจครูแบบ append-only แยกอนุมัติต้นแบบกับเนื้อหานำร่อง ถอนแล้วหยุดค้นและดาวน์โหลดสำหรับนักเรียน
-- แยกเอกสาร `teaching` กับ `evidence` เอกสารโครงการและหลักฐานไม่ถูกค้นเป็นเนื้อหาสอน ใช้ lexical search กับคำค้นประจำหัวข้อและ character grams สำหรับภาษาไทย ไม่มี vector embedding ที่ยังไม่ตรวจรับหรือ cache ข้ามผู้ใช้
+- อัปโหลด PDF, DOCX, TXT สูงสุด 10 MB สกัดข้อความใน worker แบ่ง chunk แบบคงขอบเขตย่อหน้า/หน้า เก็บ checksum และคำเตือนหน้าสกัดไม่ได้ เอกสารสอนจะพร้อมค้นอัตโนมัติเมื่อสกัดสำเร็จ (ไม่ต้องอนุมัติ PDF) ครูยังแก้ข้อความ/เลขหน้าและถอนรุ่นได้
+- แยกเอกสาร `teaching` กับ `evidence` และจัดชนิดสื่อ `lesson`, `textbook`, `worksheet`, `solution`, `slides`, `reference` พร้อม topic_id เฉพาะในรายวิชา ค้นด้วย Thai lexical + character grams เสริม Vector Gemini 768 มิติแบบ opt-in (`EMBEDDINGS_ENABLED=true`) และ fallback เป็น lexical เมื่อ Vector API มีปัญหา
 - Gemini adapter มี schema ตรวจ citation กับ chunk ที่ส่งจริง จำกัดเวลาและ output เก็บ model/prompt version กับ usage ไม่เปิดเครื่องมือเขียนข้อมูลให้โมเดล
 - แบบฝึก 6 รูปแบบ: ปรนัย จริง/เท็จ ตัวเลขพร้อม tolerance/หน่วย คำตอบสั้นตามรายการ เซตจำนวนเต็ม และคำตอบอธิบายที่ครูตรวจ ไม่ใช้ `eval` ผูกกับรุ่นโจทย์ ไม่เปิดเฉลยก่อนส่ง และกัน submission ซ้ำ
 - คำตอบอธิบายเป็น `pending_review` ไม่นับเป็นถูก/ผิดหรือจำนวนฝึกอิสระที่ตรวจแล้ว ครูในวิชาให้คะแนน 0–100 พร้อมข้อเสนอแนะ ห้ามตรวจของตัวเอง ผู้เรียนดูผลล่าสุดในหน้าความก้าวหน้า
@@ -63,7 +63,7 @@ npm --prefix liff run dev
 
 1. ครูที่มีสิทธิ์เดิมเปิด LIFF → **จัดการวิชา / ตรวจคำตอบ** ตั้งชื่อ วิชา ระดับชั้น ขอบเขต และภาษาที่ตอบ เพิ่มวิชาอื่นในโรงเรียนเดิมได้จากหน้านี้ บทบาทครูยังมาจากผู้ดูแล
 2. เพิ่มหัวข้อและคำค้น/คำเรียกอื่น เช่น `แรง, force` ไม่มีการสร้างหัวข้อคณิตศาสตร์ตายตัวในวิชาใหม่ CLI ใช้ `--topic` ซ้ำได้ และ `--language` เพื่อเลือกภาษา
-3. อัปโหลดและรับรองเอกสารกับโจทย์ในรายวิชานั้นตามขั้นตอนเดิม ทุกวิชาใช้ LINE channels, API/worker, SQL และ private bucket เดิม แยกการเข้าถึงด้วย course membership
+3. อัปโหลดเอกสารสอนแล้วใช้ค้นได้เมื่อสกัดสำเร็จ; การรับรองโจทย์/เฉลยยังเป็นกระบวนการแยกต่างหาก ทุกวิชาใช้ LINE channels, API/worker, SQL และ private bucket เดิม แยกการเข้าถึงด้วย course membership
 4. นักเรียนเลือกรายวิชาใน LIFF สำหรับถาม/ฝึก แล้วกด **ใช้วิชานี้ในแชต LINE** ข้อความ LINE ถัดไปจะผูกวิชานี้ตั้งแต่รับ webhook การเปลี่ยนวิชาภายหลังไม่ย้ายคำถามที่เข้าคิวแล้ว ผู้ที่มีหลายวิชาแต่ยังไม่เลือกจะได้รับข้อความให้เลือกผ่าน LIFF
 5. AI รับขอบเขตและหัวข้อของรายวิชา พร้อมหลักฐานที่อนุมัติของวิชานั้นเท่านั้น ถ้าไม่มีหลักฐานให้ถามเพิ่ม ระบบไม่ได้มีเนื้อหาครบทุกวิชามาให้และไม่ได้รับรองความถูกต้องทุกวิชาโดยอัตโนมัติ
 6. คำตอบตัวเลขกรอกเฉพาะตัวเลขในหน่วยที่โจทย์กำหนด รองรับทศนิยม/เลขยกกำลังฐานสิบ ไม่แปลงหน่วยหรือแก้สมการทั่วไป คำตอบสั้นเทียบรายการหลังปรับ Unicode/ช่องว่าง เลือกแยกตัวพิมพ์ได้ งานวิเคราะห์หรือประเมินทักษะใช้ครูตรวจ
@@ -83,15 +83,15 @@ Migration ใหม่ `20261021_multisubject` เพิ่มข้อมูล
 5. Bucket `adaptable-folder`: ตั้ง `STORAGE_BACKEND=s3` และ map `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` จาก Credentials/Variable References ของ bucket ใช้ `S3_ADDRESSING_STYLE=virtual` เว้นแต่ Credentials ของ bucket เดิมระบุ path-style ห้ามเปิด bucket เป็น public
 6. เพิ่ม worker จาก repository/image เดียวกัน ใช้ start command `python -m worker.run` และ Variables ชุดเดียวกับ API **ปิด HTTP healthcheck ของ worker** หากสืบทอด `railway.toml` ใช้ Settings override ให้ worker ไม่มี healthcheck `/health` Worker รวม scheduler และ outbox sender แล้ว ไม่ต้องเพิ่ม cron ที่ส่งซ้ำ
 7. LIFF แยก service ใช้ Root Directory `liff` กับ Dockerfile ในโฟลเดอร์นั้น ใส่ `NEXT_PUBLIC_LIFF_ID` และ `NEXT_PUBLIC_API_URL` เป็น build variables ก่อน build ค่าเหล่านี้ไม่ใช่ secrets
-8. เริ่ม `AI_ENABLED=false` จนมีเอกสารสอนที่ครูอนุมัติ เมื่อเปิด AI ให้ตั้ง `LLM_API_KEY`, ตรวจรุ่นโมเดล/ราคา และงบจริง `MAX_DAILY_AI_REQUESTS` จำกัดจำนวนคำขอต่อผู้ใช้ ไม่ใช่การรับประกันเพดานค่าเงิน
+8. เริ่ม `AI_ENABLED=false` จนมีเอกสารสอนที่ตรวจความถูกต้องและสิทธิ์แล้ว เมื่อเปิด AI ให้ตั้ง `LLM_API_KEY`, ตรวจรุ่นโมเดล/ราคา และงบจริง `MAX_DAILY_AI_REQUESTS` จำกัดจำนวนคำขอต่อผู้ใช้ ไม่ใช่การรับประกันเพดานค่าเงิน
 
 `db.migrate` เปิด extension ก่อน migration แรกเพื่อรองรับ vector column ไม่แก้ migration ที่สร้างอัตโนมัติเดิม หากมีข้อมูลสมาชิกข้ามโรงเรียนอยู่แล้ว migration ใหม่จะปฏิเสธ ต้องแก้ข้อมูลตามหลักฐานก่อน deploy
 
 ## ขั้นตอนตรวจรับเอกสาร
 
 1. ครูอัปโหลด roadmap และแบบฟอร์มเป็น `evidence` ส่วนเอกสารบทเรียนที่มีสิทธิ์ใช้ให้อัปโหลดเป็น `teaching` ไม่ถือไฟล์โครงการเป็นแหล่งเฉลย
-2. รอ worker ให้สถานะ `review` กดรีเฟรช ตรวจต้นฉบับกับข้อความ สมการ ตาราง และเลขหน้า DOCX ไม่มีเลขหน้าจริงที่เชื่อถือได้ ต้องให้ครูระบุหน้าเอง PDF สแกนที่ไม่มี text จะเข้าสู่ failed และต้องใช้ไฟล์ข้อความหรือ OCR ที่ตรวจแล้ว
-3. บันทึก checklist ทั้งหมด พร้อม scope `prototype` หรือ `pilot` เฉพาะอนุมัติ `pilot` จึงค้นเป็นเนื้อหาสำหรับนักเรียนได้ การอนุมัติเนื้อหาไม่ถือเป็นการอนุญาตเริ่มทดลอง
+2. รอ worker ให้สถานะ `published` (สำหรับ `teaching`) แล้วตรวจต้นฉบับกับข้อความ สมการ ตาราง และเลขหน้า DOCX/TXT ไม่มีเลขหน้าจริงที่เชื่อถือได้ PDF ที่มีบางหน้าเป็นภาพสแกนจะแสดงคำเตือน; หากไม่มีข้อความสกัดได้เลยจะเป็น `failed` และต้องใช้ OCR ภายนอกหรือไฟล์ข้อความ
+3. เอกสาร `teaching` ที่สกัดสำเร็จค้นได้ทันที โดยไม่ต้องกรอก checklist หรือ rubric อนุมัติ PDF; โปรดตรวจสิทธิ์การใช้ไฟล์และความถูกต้องก่อนอัปโหลด การตรวจรับระบบสำหรับนำร่องยังคงเป็นขั้นตอนแยกกัน
 4. สร้างโจทย์ร่าง ใส่เฉลย คำใบ้ และเหตุผล แล้วครูรับรองแต่ละข้อ โจทย์ที่เผยแพร่เป็น immutable ให้สร้างข้อ/รุ่นใหม่เพื่อแก้เนื้อหา
 5. บันทึก T01–T12 พร้อม commit, expected/actual และไฟล์หลักฐาน แต่ละผลเป็น record ใหม่ ไม่เขียนทับประวัติเดิม
 6. ในวิชาใหม่ ให้ครูจัดโจทย์ ผลคาดหวัง และเงื่อนไขผิดพลาดให้ตรงวิชาครบ 80 กรณีผ่านหน้าหลักฐานตรวจรับก่อน แล้วประเมิน AI โดยใช้ run UUID เดียวกันสำหรับครูสองคน rubric 0–3 ตาม PDF แยกจาก rubric 0–2 ของแบบตรวจเนื้อหา Word บันทึกข้อผิดพลาดวิกฤตทุกครั้ง การแก้กรณีทดสอบเพิ่ม course revision และต้องใช้รอบประเมินใหม่ ห้ามรวมผลต่าง revision ในรอบเดียว
@@ -116,7 +116,7 @@ npm --prefix liff run build -- --webpack
 ## ข้อจำกัดที่ต้องตรวจจริงก่อนนำร่อง
 
 - ยังไม่ทดสอบ OAuth, S3 Bucket, Gemini และ LINE Push กับบัญชีจริงหรือโหลด 30 ผู้ใช้บน Railway ไม่ใช้ผล mock แทนหลักฐานเหล่านี้
-- Exact lexical retrieval เป็นฐานเริ่มต้น ยังไม่มี embedding/vector ranking, OCR, การรับภาพโจทย์ หรือผู้ให้บริการ LLM ตัวที่สอง
+- Thai lexical retrieval เป็นฐานเริ่มต้น และรองรับ Vector ranking แบบเลือกเปิด ยังไม่มี OCR ใน Worker, การรับภาพโจทย์ หรือผู้ให้บริการ LLM ตัวที่สอง
 - ไม่เปิด AI tool calling ที่เขียนงาน/แผน การสร้างรายการใช้แบบฟอร์มและ API ที่ตรวจสิทธิ์ อาจเพิ่ม orchestration ภายหลังโดยใช้บริการเดียวกัน
 - ช่องทาง LINE ใช้ asynchronous Push จาก outbox ไม่มี Reply รับเรื่องทันที จึงต้องวัดเวลาและโควตา Push จริง
 - ยังไม่มีระบบคำเชิญด้วยตนเอง Rich Menu provisioning หรือการศึกษาคะแนนก่อน/หลังและติดตามผล ใช้ operator CLI เพิ่มสมาชิกที่ยืนยันตัวตนแล้ว
@@ -133,3 +133,14 @@ npm --prefix liff run build -- --webpack
 - `GET /courses/{id}/reviews`, `POST /courses/{id}/reviews/{attempt_id}`: คิวครูตรวจ 100 รายการแรก; ส่ง `score` ช่วง 0–1 และ `feedback` บันทึกได้ครั้งเดียว หน้าครูแสดงคะแนนเต็ม 100
 - `GET /evaluation/cases?course_id=...`: ครูอ่านชุดประเมินและ `course_revision`; `PUT /courses/{id}/evaluation-cases/{case_id}` ส่ง `input`, `expected`, `failure`, `expected_revision`
 - การบันทึก `/courses/{id}/evaluations` ต้องเพิ่ม `expected_course_revision`; รายงานส่งออกแนบชุดทดสอบ ขอบเขตและ revision ด้วย ผลเก่าไม่ถูกลบ
+
+
+## Course knowledge pipeline (2026-10-28)
+
+- อัปโหลด `purpose=teaching` พร้อม `material_type` (lesson/textbook/worksheet/solution/slides/reference), `topic_id` (ถ้ามี) และไฟล์ PDF/DOCX/TXT. รายการ `evidence` ไม่ถูกค้นโดย AI
+- Worker สกัดข้อความตามหน้า ตัด chunk โดยให้ความสำคัญกับการขึ้นย่อหน้า/บรรทัดและเก็บ `page_no`, `chunk_id`, `version_id`. หน้าที่ไม่มีข้อความจะแจ้ง `extraction_warning` และยังไม่มี OCR อัตโนมัติ
+- งาน Gemini ตรวจคำตอบ JSON กับ schema และ citation UUID ที่ส่งให้จริง ลองซ่อมคำตอบ 1 ครั้ง และแสดงข้อความข้อจำกัดหากตรวจไม่ผ่าน (ไม่แต่งอ้างอิง)
+- เปิด embedding เพิ่มได้ด้วย `EMBEDDINGS_ENABLED=true` และ `EMBEDDING_MODEL=gemini-embedding-001` (ต้องมี `LLM_API_KEY` และมีค่าใช้จ่าย API เพิ่ม). Worker สร้าง Vector 768 มิติโดยแบ่งงานย่อย 8 chunks/Job; การค้นจะผสม vector similarity กับ lexical search. ค่าเริ่มต้น **ปิด** เพื่อไม่เพิ่มค่าใช้จ่ายหรือทำให้ระบบเดิมสะดุด
+- สำหรับเอกสารเก่า ครูเปิดเอกสารแล้วกด **สร้าง/อัปเดต Vector ของไฟล์นี้** เพื่อเรียก `POST /documents/versions/{version_id}/index`. ต้องเปิด `EMBEDDINGS_ENABLED=true` ให้ทั้ง API และ Worker ก่อน; กดซ้ำระหว่างมีงานค้างจะถูกปฏิเสธ
+- เนื้อหาทุกประเภทต้องตรวจสิทธิ์ตามโรงเรียนและรายวิชา. ไฟล์ต้นฉบับอยู่ใน Private Object Storage ไม่ได้ส่ง URL สาธารณะให้ Gemini
+- หลัง deploy migration `20261028_course_materials` ให้ตรวจ API/Worker/LIFF และทดลองถามจริงด้วย PDF ที่มีข้อความ; การอัปโหลดเอกสารที่มีลิขสิทธิ์ต้องมีสิทธิ์ใช้งาน
