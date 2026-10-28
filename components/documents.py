@@ -26,9 +26,8 @@ from db.models import (AuditEvent, Chunk, ContentReview, Document, DocumentVersi
 
 router = APIRouter(tags=["documents"])
 log = logging.getLogger(__name__)
-# Legacy teaching files in "review" are immediately usable; new ones become published
-# after successful extraction. Evidence files remain private and are never AI sources.
-TEACHING_READY_STATUSES = ("review", "published")
+# Only teacher-approved documents are visible to students and retrievable by AI.
+TEACHING_READY_STATUSES = ("published",)
 MATERIAL_TYPES = ("lesson", "textbook", "worksheet", "solution", "slides", "reference")
 CHECKLIST = {
     "scope": "ขอบเขตและรายวิชาถูกต้อง",
@@ -92,29 +91,40 @@ def extract_pages(data: bytes, filename: str) -> list[tuple[int, str]]:
     return pages
 
 
-def ingest(db: Session, version_id: UUID):
+def ingest(db: Session, version_id: UUID, ai_pages: list[tuple[int, str, list[str], str | None]] | None = None):
     version = db.exec(select(DocumentVersion).where(DocumentVersion.id == version_id).with_for_update()).first()
     if not version or version.status not in {"uploaded", "processing"}:
         return
-    data = read_file(version.storage_key, version.checksum)
-    pages = extract_pages(data, version.filename)
-    db.exec(delete(Chunk).where(Chunk.version_id == version.id))
-    ordinal = 0
-    blank_pages = [n for n, page_text in pages if n is not None and not page_text.strip()]
-    for page_no, page_text in pages:
-        # Keep page references authoritative; preserve equations and paragraph boundaries.
+    if version.filename.lower().endswith(".pdf"):
+        if ai_pages is None:
+            raise ValueError("PDF_AI_REQUIRED")
+        pages = ai_pages
+    else:
+        data = read_file(version.storage_key, version.checksum)
+        pages = [(n, content, [], None) for n, content in extract_pages(data, version.filename)]
+    # Prepare all metadata before changing database state.
+    prepared = []
+    blank = []
+    warnings = []
+    for page_no, page_text, keywords, note in pages:
+        if not page_text.strip():
+            blank.append(page_no)
+        if note:
+            warnings.append(f"หน้า {page_no}: {note}")
         for part in chunk_page(page_text):
-            db.add(Chunk(version_id=version.id, ordinal=ordinal, page_no=page_no, text=part))
-            ordinal += 1
-    if not ordinal:
+            # Keywords are context for matching, not a replacement for the source text.
+            related = [k for k in keywords if k.casefold() in part.casefold()]
+            prepared.append((page_no, part, related or keywords[:8]))
+    if not prepared:
         raise ValueError("NO_SEARCHABLE_TEXT")
-    # Detect image/scanned PDF pages rather than silently claiming they were read.
-    version.extraction_warning = (
-        "PAGES_WITHOUT_EXTRACTABLE_TEXT: " + ", ".join(map(str, blank_pages[:50]))
-        if blank_pages else None
-    )
-    # Teaching material is ready as soon as extraction succeeds: no approval gate.
-    version.status = "published" if db.get(Document, version.document_id).purpose == "teaching" else "review"
+    db.exec(delete(Chunk).where(Chunk.version_id == version.id))
+    for ordinal, (page_no, part, keywords) in enumerate(prepared):
+        db.add(Chunk(version_id=version.id, ordinal=ordinal, page_no=page_no,
+            text=part, keywords=keywords))
+    messages = ([f"หน้าไม่มีข้อความ: {', '.join(map(str, blank[:30]))}"] if blank else []) + warnings[:20]
+    version.extraction_warning = " | ".join(messages)[:4000] or None
+    # Mandatory teacher checklist + approval; never auto-publish.
+    version.status = "review"
     version.revision += 1
     db.add(version)
 
@@ -206,6 +216,7 @@ def document_detail(version_id: UUID, user: User = Depends(current_user), db: Se
 class ChunkEdit(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
     page_no: int = Field(ge=1, le=1000)
+    keywords: list[str] = Field(default_factory=list, max_length=12)
     expected_revision: int = Field(ge=1)
 
 
@@ -213,12 +224,13 @@ class ChunkEdit(BaseModel):
 def edit_chunk(version_id: UUID, chunk_id: UUID, data: ChunkEdit,
     user: User = Depends(current_user), db: Session = Depends(get_session)):
     _, version = version_access(db, user, version_id, teacher=True, lock=True)
-    if version.status not in TEACHING_READY_STATUSES or version.revision != data.expected_revision:
+    if version.status != "review" or version.revision != data.expected_revision:
         raise HTTPException(409, "VERSION_CONFLICT")
     chunk = db.get(Chunk, chunk_id)
     if not chunk or chunk.version_id != version_id:
         raise HTTPException(404, "CHUNK_NOT_FOUND")
     chunk.text, chunk.page_no, chunk.embedding, chunk.embedding_model = data.text, data.page_no, None, None
+    chunk.keywords = list(dict.fromkeys(k.strip()[:80] for k in data.keywords if k.strip()))[:12]
     version.revision += 1
     db.add(chunk)
     db.add(version)
@@ -281,6 +293,8 @@ def publish_document(document_id: UUID, data: ReviewRequest,
         chunks = db.exec(select(Chunk).where(Chunk.version_id == version.id)).all()
         if not chunks or any(c.page_no is None for c in chunks):
             raise HTTPException(400, "REVIEW_PAGE_NUMBERS_REQUIRED")
+        if version.extraction_warning and not data.notes.strip():
+            raise HTTPException(400, "REVIEW_EXTRACTION_WARNING_IN_NOTES")
     review = ContentReview(version_id=version.id, reviewer_id=user.id,
         decision=data.decision, scope=data.scope, checklist=data.checklist, rubric=data.rubric, notes=data.notes)
     db.add(review)
@@ -390,6 +404,10 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str,
         gram_score = shared / max(len(grams), 1) if shared >= 3 else 0
         score = direct * 3 + topic_match * 4 + (gram_score if gram_score >= .2 else 0)
         score += semantic_scores.get(chunk.id, 0)
+        # AI-derived, teacher-reviewed keywords connect questions with source chunks.
+        aliases = [normalize(k) for k in (chunk.keywords or [])]
+        score += sum(5 for keyword in aliases if keyword in query or query in keyword) if query else 0
+        score += sum(2 for keyword in aliases if any(term in keyword for term in terms))
         scored.append((score, chunk, version, document))
     # For a selected PDF, permit general prompts (e.g. "สรุปไฟล์นี้")
     # to fall back to its first pages if no exact keyword matches were found.
@@ -399,7 +417,8 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str,
         scored.sort(key=lambda row: (-row[0], str(row[1].id)))
     return [{"chunk_id": str(c.id), "document_id": str(d.id), "version_id": str(v.id),
              "document": d.title, "filename": v.filename, "version": v.version,
-             "page_no": c.page_no, "checksum": v.checksum, "text": c.text}
+             "page_no": c.page_no, "checksum": v.checksum, "text": c.text,
+             "keywords": c.keywords}
         for score, c, v, d in scored[:5] if score > 0 or source_version_id is not None]
 
 
