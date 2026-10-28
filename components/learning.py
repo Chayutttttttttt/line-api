@@ -185,6 +185,7 @@ def job_status(job_id: UUID, user: User = Depends(current_user), db: Session = D
     if job.payload.get("message_id"):
         message = db.get(Message, UUID(job.payload["message_id"]))
     return {"job_id": job.id, "status": job.state,
+        "error_code": job.payload.get("error_code") if job.state == "failed" else None,
         "message_id": message.id if message and message.owner_id == user.id else None,
         "answer": message.text if message and message.owner_id == user.id else None}
 
