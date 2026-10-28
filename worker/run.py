@@ -196,6 +196,7 @@ def process_job(claim):
                         "version_ids": [c["version_id"] for c in result.get("citations", [])], "message_id": str(message.id)})
             job.payload = {"request_id": claim["payload"].get("request_id"), "message_id": str(message.id),
                 "model": result.get("model"), "prompt_version": PROMPT_VERSION,
+                "generation_status": result.get("generation_status", "valid"),
                 "course_id": str(course_id) if course_id else None,
                 "course_revision": course_context["revision"] if course_id else None,
                 "usage": result.get("usage", {}), "citations": [
