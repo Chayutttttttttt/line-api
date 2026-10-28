@@ -74,7 +74,8 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
           <label className="block">คำค้นเพิ่มเติม<input name="keywords" defaultValue={topic.keywords.join(", ")} className="pilot-input" /></label>
           <button disabled={busy} className="pilot-secondary">{topic.id ? "แก้ไขหัวข้อ" : "เพิ่มหัวข้อ"}</button>
         </form>)}
-      </section>      {tab === "reviews" && <section className="space-y-3"><h3 className="font-semibold">คำตอบรอครูตรวจ</h3>
+      </section>}
+      {tab === "reviews" && <section className="space-y-3"><h3 className="font-semibold">คำตอบรอครูตรวจ</h3>
         <button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>โหลดรายการล่าสุด</button>
         {!reviews.length && <p>ไม่มีคำตอบรอตรวจ</p>}
         {reviews.map((review) => <form key={review.id} className="space-y-3 rounded-xl border border-border p-4" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
