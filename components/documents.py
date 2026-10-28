@@ -95,6 +95,13 @@ def ingest(db: Session, version_id: UUID, ai_pages: list[tuple[int, str, list[st
     version = db.exec(select(DocumentVersion).where(DocumentVersion.id == version_id).with_for_update()).first()
     if not version or version.status not in {"uploaded", "processing"}:
         return
+    document = db.get(Document, version.document_id)
+    # Project evidence is never sent to Gemini nor indexed for learner retrieval.
+    if document.purpose == "evidence":
+        version.status = "review"
+        version.revision += 1
+        db.add(version)
+        return
     if version.filename.lower().endswith(".pdf"):
         if ai_pages is None:
             raise ValueError("PDF_AI_REQUIRED")
