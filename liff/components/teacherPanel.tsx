@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, saveBlob } from "@/lib/api";
+import { documentOutcome, documentDeleteError } from "@/lib/documentStatus";
 
 type MaterialType = "lesson" | "textbook" | "worksheet" | "solution" | "slides" | "reference";
 const materialNames: Record<MaterialType, string> = {
@@ -58,6 +59,31 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
     setVersions(await api<Version[]>(`/documents?course_id=${courseId}`));
     if (selectedId) setDetail(await api<Detail>(`/documents/versions/${selectedId}`));
   }
+  async function removeVersion() {
+    if (!detail || !selectedId) return;
+    const id = selectedId;
+    const original = detail.version;
+    const outcome = documentOutcome(original);
+    if (["published", "uploaded", "processing"].includes(original.status)) {
+      setError(original.status === "published"
+        ? "ต้องถอนการใช้เอกสารที่อนุมัติแล้วก่อนลบถาวร"
+        : "ต้องรอให้ Worker ประมวลผลไฟล์เสร็จก่อนลบ");
+      return;
+    }
+    if (!window.confirm(`ลบถาวร: ${original.filename} (รุ่น ${original.version})?\\nระบบจะลบไฟล์ต้นฉบับ Chunks และผลตรวจ ไม่สามารถกู้คืนได้หากไม่มีข้อมูลสำรอง\\nสถานะปัจจุบัน: ${outcome.label}`)) return;
+    await run(async () => {
+      try {
+        const result = await api<{deleted: boolean; object_deleted: boolean; chunks_deleted: number; reviews_deleted: number}>(
+          `/documents/versions/${id}`, { method: "DELETE", body: JSON.stringify({ expected_revision: original.revision }) });
+        setSelectedId("");
+        setDetail(null);
+        setVersions(await api<Version[]>(`/documents?course_id=${courseId}`));
+        setMessage(`ลบไฟล์ถาวรสำเร็จ (ต้นฉบับ: ${result.object_deleted ? "ลบแล้ว" : "ยังไม่ลบ"}, Chunks: ${result.chunks_deleted}, ประวัติผลตรวจ: ${result.reviews_deleted})`);
+      } catch (error) {
+        throw new Error(documentDeleteError(error as Error));
+      }
+    });
+  }
   async function run(action: () => Promise<void>) {
     setBusy(true); setError(""); setMessage("");
     try { await action(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -100,14 +126,20 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         </label>}
         <button disabled={busy} className="pilot-button">เพิ่มไฟล์สอนในรายวิชา</button>
       </form>}
-      {documentTab === "library" && <><div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status === "review" ? "รอครูตรวจ" : v.status === "published" ? "อนุมัติแล้ว" : v.status === "failed" ? "อ่านไม่สำเร็จ" : "กำลังดำเนินการ"}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
+      {documentTab === "library" && <><div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {documentOutcome(v).label}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
       {detail && <article className="space-y-4">
-        <p className="text-sm font-medium">{detail.version.filename} · {detail.version.status === "review" ? "รอครูตรวจ" : detail.version.status === "published" ? "อนุมัติแล้ว" : detail.version.status} · {materialNames[detail.document.material_type] ?? detail.document.material_type}</p>
+        <p className="text-sm font-medium">{detail.version.filename} · {materialNames[detail.document.material_type] ?? detail.document.material_type}</p>
+        <section role="status" className="space-y-2 rounded-xl border border-border bg-surface-soft p-3">
+          <p className="font-semibold">{documentOutcome({ ...detail.version, purpose: detail.document.purpose }).success ? "✓" : "•"} ผลการประมวลผล: {documentOutcome({ ...detail.version, purpose: detail.document.purpose }).label}</p>
+          <p className="text-sm">{documentOutcome({ ...detail.version, purpose: detail.document.purpose }).detail}</p>
+          <p className="text-xs text-secondary">สถานะในฐานข้อมูล: {detail.version.status} · ตรวจพบ Chunks {detail.chunks.length} ส่วน</p>
+          {detail.version.status === "failed" && <p className="text-sm font-medium">ไม่สามารถอนุมัติไฟล์นี้ได้ กรุณาแก้ PDF แล้วอัปโหลดใหม่ หรือลบไฟล์ที่ล้มเหลวทิ้ง</p>}
+        </section>
         <details className="rounded-xl bg-surface-soft p-3"><summary className="cursor-pointer text-sm">รายละเอียดไฟล์สำหรับตรวจสอบ</summary>
           <p className="mt-2 break-all text-xs">รหัสไฟล์: {detail.version.id}<br />SHA256: {detail.version.checksum}</p>
         </details>
         <p className="text-sm">{detail.document.purpose === "teaching" && detail.version.status === "published" ? "ครูอนุมัติแล้ว: AI ใน LINE ใช้เอกสารนี้ได้" : detail.version.status === "review" ? "รอตรวจ: AI และนักเรียนยังใช้เอกสารนี้ไม่ได้" : "ไฟล์นี้ยังไม่พร้อมใช้กับ AI"}</p>
-        {detail.version.extraction_error && <p role="alert">สกัดข้อความไม่สำเร็จ: {detail.version.extraction_error} โปรดใช้ PDF ที่มีข้อความหรืออัปโหลดรุ่นใหม่</p>}
+        {detail.version.extraction_error && <p className="text-xs text-secondary">รหัสข้อผิดพลาดจาก Worker: {detail.version.extraction_error}</p>}
         {detail.version.extraction_warning && <p role="alert" className="rounded-xl border border-border p-3 text-sm">AI พบส่วนที่อ่านไม่ชัด กรุณาตรวจเทียบกับ PDF: {detail.version.extraction_warning}</p>}
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
         {detail.document.purpose === "teaching" && detail.version.status === "published" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => {
@@ -158,7 +190,14 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
             <button className="pilot-button w-full" disabled={busy || !Object.keys(checks).length}>ตรวจครบแล้ว อนุมัติใช้กับ AI</button>
           </form>
         </section>}
-        {["review", "published"].includes(detail.version.status) && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
+        {["review", "published"].includes(detail.version.status) && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว สามารถลบถาวรได้เมื่อไม่มีข้อมูลอื่นอ้างอิง"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
+        <section className="space-y-2 rounded-xl border border-border p-3">
+          <p className="font-semibold text-sm">ล้างไฟล์ที่ไม่ต้องการ</p>
+          <p className="text-xs text-secondary">ลบ PDF/DOCX/TXT ต้นฉบับ พร้อม Chunks, Keywords, Embeddings และประวัติการตรวจของรุ่นนี้อย่างถาวร ถ้าไฟล์อนุมัติแล้วต้องถอนก่อน และไม่สามารถลบขณะ Worker กำลังทำงานหรือมีแบบฝึกอ้างอิงอยู่</p>
+          <button type="button" className="pilot-secondary text-red-800" disabled={busy || ["published", "uploaded", "processing"].includes(detail.version.status)} onClick={() => void removeVersion()}>ลบไฟล์รุ่นนี้ถาวร</button>
+          {detail.version.status === "published" && <p className="text-xs">ไฟล์นี้อนุมัติแล้ว กรุณาถอนการใช้ก่อนลบ</p>}
+          {["uploaded", "processing"].includes(detail.version.status) && <p className="text-xs">รออ่านไฟล์เสร็จหรือสิ้นสุดงานก่อนจึงลบได้</p>}
+        </section>
         <h3 className="font-semibold">ประวัติผลตรวจ</h3>{detail.reviews.map((r) => <p key={r.id} className="rounded-xl bg-surface-soft p-3 text-sm break-all">{r.decision} · {r.scope} · {new Date(r.created_at).toLocaleString("th-TH")}<br />ผู้ตรวจ {r.reviewer_id}<br />{r.notes}<br />คะแนน 0–2: {Object.entries(r.rubric).map(([key, score]) => `${key} ${score}`).join(" · ")}</p>)}
       </article>}</>}
       {documentTab === "questions" && <section className="rounded-xl border border-border p-4">
