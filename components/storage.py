@@ -82,3 +82,24 @@ def read_file(key: str, checksum: str) -> bytes:
     if hashlib.sha256(data).hexdigest() != checksum:
         raise HTTPException(409, "FILE_CHECKSUM_MISMATCH")
     return data
+
+
+def delete_file(key: str) -> None:
+    """Permanently remove a single validated storage key (not a whole bucket).
+
+    Missing files are treated as already deleted, so a partially completed
+    document deletion can safely be retried.
+    """
+    if STORAGE_BACKEND == "s3":
+        object_path(key)
+        try:
+            s3_client().delete_object(Bucket=S3_BUCKET, Key=key)
+        except (BotoCoreError, ClientError):
+            raise HTTPException(503, "FILE_STORAGE_DELETE_FAILED") from None
+    elif STORAGE_BACKEND == "local":
+        try:
+            object_path(key).unlink(missing_ok=True)
+        except OSError:
+            raise HTTPException(503, "FILE_STORAGE_DELETE_FAILED") from None
+    else:
+        raise HTTPException(503, "UNKNOWN_STORAGE_BACKEND")
