@@ -16,7 +16,7 @@ from pypdf import PdfReader
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
-from components.chunking import chunk_page
+from components.semantic_chunking import build_semantic_chunks
 from components.embeddings import embed_query
 from components.login import course_access, current_user
 from components.storage import put_file, read_file
@@ -109,25 +109,18 @@ def ingest(db: Session, version_id: UUID, ai_pages: list[tuple[int, str, list[st
     else:
         data = read_file(version.storage_key, version.checksum)
         pages = [(n, content, [], None) for n, content in extract_pages(data, version.filename)]
-    # Prepare all metadata before changing database state.
-    prepared = []
-    blank = []
-    warnings = []
-    for page_no, page_text, keywords, note in pages:
-        if not page_text.strip():
-            blank.append(page_no)
-        if note:
-            warnings.append(f"หน้า {page_no}: {note}")
-        for part in chunk_page(page_text):
-            # Keywords are context for matching, not a replacement for the source text.
-            related = [k for k in keywords if k.casefold() in part.casefold()]
-            prepared.append((page_no, part, related or keywords[:8]))
+    # Gemini provides semantic sections; Python merges matching topics across
+    # pages, retaining exact first/last page for reviewable citations.
+    blank = [page[0] for page in pages if not page[1].strip() and page[0] is not None]
+    warnings = [f"หน้า {page[0]}: {page[3]}" for page in pages if page[3]]
+    prepared = build_semantic_chunks(pages)
     if not prepared:
         raise ValueError("NO_SEARCHABLE_TEXT")
     db.exec(delete(Chunk).where(Chunk.version_id == version.id))
-    for ordinal, (page_no, part, keywords) in enumerate(prepared):
-        db.add(Chunk(version_id=version.id, ordinal=ordinal, page_no=page_no,
-            text=part, keywords=keywords))
+    for ordinal, part in enumerate(prepared):
+        db.add(Chunk(version_id=version.id, ordinal=ordinal,
+            page_no=part["page_no"], page_end=part["page_end"],
+            topic=part["topic"], text=part["text"], keywords=part["keywords"]))
     messages = ([f"หน้าไม่มีข้อความ: {', '.join(map(str, blank[:30]))}"] if blank else []) + warnings[:20]
     version.extraction_warning = " | ".join(messages)[:4000] or None
     # Mandatory teacher checklist + approval; never auto-publish.
@@ -223,6 +216,8 @@ def document_detail(version_id: UUID, user: User = Depends(current_user), db: Se
 class ChunkEdit(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
     page_no: int = Field(ge=1, le=1000)
+    page_end: int | None = Field(default=None, ge=1, le=1000)
+    topic: str = Field(default="", max_length=255)
     keywords: list[str] = Field(default_factory=list, max_length=12)
     expected_revision: int = Field(ge=1)
 
@@ -236,7 +231,11 @@ def edit_chunk(version_id: UUID, chunk_id: UUID, data: ChunkEdit,
     chunk = db.get(Chunk, chunk_id)
     if not chunk or chunk.version_id != version_id:
         raise HTTPException(404, "CHUNK_NOT_FOUND")
-    chunk.text, chunk.page_no, chunk.embedding, chunk.embedding_model = data.text, data.page_no, None, None
+    if data.page_end is not None and data.page_end < data.page_no:
+        raise HTTPException(400, "INVALID_PAGE_RANGE")
+    chunk.text, chunk.page_no, chunk.page_end = data.text, data.page_no, data.page_end or data.page_no
+    chunk.topic = data.topic.strip()
+    chunk.embedding, chunk.embedding_model = None, None
     chunk.keywords = list(dict.fromkeys(k.strip()[:80] for k in data.keywords if k.strip()))[:12]
     version.revision += 1
     db.add(chunk)
@@ -300,6 +299,8 @@ def publish_document(document_id: UUID, data: ReviewRequest,
         chunks = db.exec(select(Chunk).where(Chunk.version_id == version.id)).all()
         if not chunks or any(c.page_no is None for c in chunks):
             raise HTTPException(400, "REVIEW_PAGE_NUMBERS_REQUIRED")
+        if any(c.page_end is not None and c.page_end < c.page_no for c in chunks):
+            raise HTTPException(400, "INVALID_PAGE_RANGE")
         if version.extraction_warning and not data.notes.strip():
             raise HTTPException(400, "REVIEW_EXTRACTION_WARNING_IN_NOTES")
     review = ContentReview(version_id=version.id, reviewer_id=user.id,
@@ -418,6 +419,11 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str,
         gram_score = shared / max(len(grams), 1) if shared >= 3 else 0
         score = direct * 3 + topic_match * 4 + (gram_score if gram_score >= .2 else 0)
         score += semantic_scores.get(chunk.id, 0)
+        # Boost canonical semantic topic as well as verified keywords.
+        title = normalize(chunk.topic or "")
+        if title:
+            score += sum(4 for term in terms if term in title)
+            score += 5 if title in query else 0
         # AI-derived, teacher-reviewed keywords connect questions with source chunks.
         aliases = [normalize(k) for k in (chunk.keywords or [])]
         score += sum(5 for keyword in aliases if keyword in query or query in keyword) if query else 0
@@ -431,7 +437,9 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str,
         scored.sort(key=lambda row: (-row[0], str(row[1].id)))
     return [{"chunk_id": str(c.id), "document_id": str(d.id), "version_id": str(v.id),
              "document": d.title, "filename": v.filename, "version": v.version,
-             "page_no": c.page_no, "checksum": v.checksum, "text": c.text,
+             "page_no": c.page_no, "page_start": c.page_no,
+             "page_end": c.page_end or c.page_no,
+             "topic": c.topic, "checksum": v.checksum, "text": c.text,
              "keywords": c.keywords}
         for score, c, v, d in scored[:5] if score > 0 or source_version_id is not None]
 
