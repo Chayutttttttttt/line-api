@@ -10,7 +10,8 @@ const allowedViews: ReadonlySet<string> = new Set(DASHBOARD_VIEWS);
 
 export function getRequestedDashboardView(search: string): DashboardView | null {
   const view = new URLSearchParams(search).get("view");
-  // Old LINE Rich Menu links to ?view=ask now open the homepage; no web AI chat.\n  return view === "ask" ? "home" : view && allowedViews.has(view) ? (view as DashboardView) : null;
+  // Old LINE Rich Menu links to ?view=ask now open the homepage; no web AI chat.
+  return view === "ask" ? "home" : view && allowedViews.has(view) ? (view as DashboardView) : null;
 }
 
 /** Keep the requested tab through the separate LINE login page. */
