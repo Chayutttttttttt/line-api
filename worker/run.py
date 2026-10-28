@@ -206,7 +206,12 @@ def process_job(claim):
                 db.flush()
             db.add(Message(conversation_id=conversation.id, owner_id=user.id, role="user",
                 text=claim["payload"]["text"], line_message_id=claim["payload"].get("line_message_id")))
-            references = "\n".join(f"{c['document']} รุ่น {c['version']} หน้า {c['page_no'] or '-'} (รหัสไฟล์: {c['version_id']})" for c in result.get("citations", []))
+            references = "\n".join(
+                f"{c['document']} รุ่น {c['version']} "
+                f"หน้า {c['page_no'] or '-'}"
+                f"{'–' + str(c['page_end']) if c.get('page_end') and c['page_end'] != c['page_no'] else ''}"
+                f" (รหัสไฟล์: {c['version_id']})"
+                for c in result.get("citations", []))
             answer = result["answer"] + (f"\n\nอ้างอิง\n{references}" if references else "")
             message = Message(conversation_id=conversation.id, owner_id=user.id, role="assistant", text=answer)
             db.add(message)
@@ -222,7 +227,7 @@ def process_job(claim):
                 "course_id": str(course_id) if course_id else None,
                 "course_revision": course_context["revision"] if course_id else None,
                 "usage": result.get("usage", {}), "citations": [
-                    {k: c[k] for k in ("chunk_id", "document_id", "version_id", "checksum", "page_no")} for c in result.get("citations", [])]}
+                    {k: c[k] for k in ("chunk_id", "document_id", "version_id", "checksum", "page_no", "page_end")} for c in result.get("citations", [])]}
             job.state, job.updated_at = "done", utc_now()
             db.add(job)
             if job.webhook_event_id:
