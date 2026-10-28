@@ -83,7 +83,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
       {documentTab === "upload" && <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId);
         if (!value(form, "document_id")) form.delete("document_id");
         if (!value(form, "topic_id")) form.delete("topic_id");
-        void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage(`รับไฟล์แล้ว · รหัสไฟล์ (version_id) ${uploaded.version_id} · รอ Worker สกัดข้อความก่อนใช้ถาม AI · งาน ${uploaded.ingestion_job_id}`); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
+        void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage("รับไฟล์แล้ว กด ‘ดูและแก้ไฟล์’ เพื่อตรวจว่าอ่านข้อความสำเร็จหรือไม่"); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
         <label>ชื่อเอกสาร<input name="title" required maxLength={255} className="pilot-input" /></label>
         <label>การใช้เอกสาร<select name="purpose" className="pilot-input" value={uploadPurpose} onChange={(e) => { setUploadPurpose(e.target.value); if (e.target.value === "evidence") setUploadTopic(""); }}><option value="teaching">เอกสารสอน (ใช้ตอบ AI)</option><option value="evidence">หลักฐานและเอกสารโครงการ (ไม่ใช้ตอบ AI)</option></select></label>
         {uploadPurpose === "teaching" && <>
@@ -107,7 +107,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
         {detail.document.purpose === "teaching" && ["review", "published"].includes(detail.version.status) && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => {
           const result = await api<{queued_batches: number}>(`/documents/versions/${selectedId}/index`, {method: "POST"});
-          setMessage(`ส่งสร้าง Vector แล้ว ${result.queued_batches} ชุด (ถ้าไม่เปิด EMBEDDINGS_ENABLED ระบบจะแจ้งเตือน)`);
+          setMessage(`ส่งสร้างดัชนีค้นหาแล้ว ${result.queued_batches} ชุด`);
         })}>สร้าง/อัปเดต Vector ของไฟล์นี้</button>}
 
         <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-semibold">ตรวจหรือแก้ข้อความที่อ่านจากไฟล์ ({detail.chunks.length} ส่วน)</summary>
@@ -133,7 +133,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         <label className="block">ผล<select name="result" className="pilot-input"><option value="not_tested">ยังไม่ทดสอบ</option><option value="pass">ผ่าน</option><option value="fail">ไม่ผ่าน</option></select></label>
         {[["build", "Commit หรือรุ่นโปรแกรม"], ["expected", "ผลที่คาดหวัง"], ["actual", "ผลที่เกิดขึ้นจริง"], ["detail", "วิธีทดสอบ สภาพแวดล้อม และรายละเอียดหลักฐาน"]].map(([name, label]) => <label key={name} className="block">{label}<textarea required name={name} minLength={name === "build" ? 7 : 1} maxLength={5000} className="pilot-input" /></label>)}
         <label className="block">แนบไฟล์หลักฐานรุ่นที่เก็บไว้<select name="artifact" className="pilot-input"><option value="">ไม่แนบไฟล์</option>{versions.filter((v) => v.purpose === "evidence").map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label><button disabled={busy} className="pilot-button">บันทึกหลักฐานจริง</button>
-      </form>
+      </form>}
       {acceptanceTab === "cases" && <details open className="rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">จัดชุดทดสอบให้ตรงรายวิชา</summary>
         <p className="my-3 text-sm">กำหนดโจทย์ ผลคาดหวัง และสิ่งที่ถือว่าผิดให้ครบก่อนเริ่มให้คะแนน การแก้ชุดทดสอบจะต้องประเมินรอบใหม่ เหลือ {cases.filter((c) => c.needs_customization).length} กรณีที่ต้องกำหนด</p>
         <label className="block">กรณีทดสอบ<select value={editingCase} onChange={(e) => setEditingCase(e.target.value)} className="pilot-input"><option value="">เลือกกรณี</option>{cases.map((c) => <option key={c.id} value={c.id}>{c.id} · {c.needs_customization ? "ยังไม่กำหนด" : "กำหนดแล้ว"}</option>)}</select></label>
