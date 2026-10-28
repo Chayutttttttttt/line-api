@@ -18,7 +18,7 @@ type Plan = { plan: { id: string; state: string; revision: number; end_date: str
 type Progress = { attempts: number; independent_attempts: number; independent_correct: number; with_hints: number; pending_review: number; recommendation: string };
 type Preferences = { reminders_enabled: boolean; quiet_start: number; quiet_end: number };
 type View = DashboardView;
-const tabs: [View, string][] = [["ask", "ถามบทเรียน"], ["tasks", "งานของฉัน"], ["practice", "ฝึกโจทย์"], ["plans", "แผนอ่านสอบ"], ["progress", "ความก้าวหน้า"], ["documents", "เอกสารบทเรียน"], ["settings", "ตั้งค่า"]];
+type Group = "home" | "learning" | "planning" | "teacher" | "settings" | "admin";
 const dateTime = (value: string) => new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(value));
 const field = (form: FormData, name: string) => String(form.get(name) ?? "");
 const json = (value: unknown) => JSON.stringify(value);
@@ -84,19 +84,69 @@ export default function Dashboard() {
 
   const course = me?.courses.find((c) => c.id === courseId);
   const teacher = course?.role === "teacher" || course?.role === "admin";
+  const group: Group = view === "home" || view === "ask" ? "home"
+    : view === "practice" || view === "progress" || (view === "documents" && !teacher) ? "learning"
+    : view === "tasks" || view === "plans" ? "planning"
+    : view === "course" || view === "acceptance" || (view === "documents" && teacher) ? "teacher"
+    : view === "admin" ? "admin" : "settings";
+  const subviews: [View, string][] = group === "learning"
+    ? [["practice", "ฝึกทำโจทย์"], ["progress", "ผลการเรียน"], ...(!teacher ? [["documents", "เอกสารบทเรียน"] as [View, string]] : [])]
+    : group === "planning" ? [["tasks", "งานที่ต้องทำ"], ["plans", "แผนอ่านสอบ"]]
+    : group === "teacher" ? [["documents", "ไฟล์และแบบฝึก"], ["course", "รายวิชาและตรวจคำตอบ"], ["acceptance", "ตรวจรับระบบ"]]
+    : [];
+  const menu: { id: Group; label: string; subtitle: string; target: View }[] = [
+    {id:"home",label:"หน้าแรก",subtitle:"เริ่มต้นใช้งาน",target:"home"},
+    {id:"learning",label:"การเรียน",subtitle:"ฝึกและดูผล",target:"practice"},
+    {id:"planning",label:"งานและแผน",subtitle:"งานและการสอบ",target:"tasks"},
+    ...(teacher ? [{id:"teacher" as Group,label:"สำหรับครู",subtitle:"จัดการชั้นเรียน",target:"documents" as View}] : []),
+    {id:"settings",label:"ตั้งค่า",subtitle:"การแจ้งเตือน",target:"settings"},
+    ...(me?.is_admin ? [{id:"admin" as Group,label:"ผู้ดูแลระบบ",subtitle:"จัดการสมาชิก",target:"admin" as View}] : []),
+  ];
 
   if (!me) return <main className="mx-auto w-full max-w-xl p-8"><h1 className="text-2xl font-bold text-brand-navy">ผู้ช่วยเรียน</h1><p className="my-4" role="status">{error || "กำลังตรวจสอบบัญชี LINE…"}</p><Link className="text-brand-blue underline" href={requestedView ? `/login?view=${requestedView}` : "/login"}>เข้าสู่ระบบด้วย LINE</Link></main>;
 
   return <main className="mx-auto w-full max-w-5xl p-4 pb-16 sm:p-8">
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm text-secondary">LINE Learning · เตรียมความพร้อมก่อนนำร่อง</p><h1 className="text-2xl font-bold text-brand-navy">สวัสดี {me.display_name || "ผู้เรียน"}</h1></div><Link href="/login" className="text-sm text-brand-blue underline">บัญชี LINE</Link></header>
-    <p className="mb-4 rounded-xl bg-brand-mint/50 p-3 text-sm">เรียนและฝึกตามรายวิชาที่เลือก AI ใช้ไฟล์บทเรียนที่สกัดข้อความสำเร็จโดยไม่ต้องอนุมัติไฟล์ คำตอบอธิบายในแบบฝึกยังส่งให้ครูตรวจ</p>
-    <label className="mb-5 block">รายวิชา<select value={courseId} disabled={busy} className="pilot-input mt-1" onChange={(e) => { setCourseId(e.target.value); setView("ask"); setPractice(null); setFeedback(""); setProgress(null); setError(""); setNotice(""); }}><option value="">เลือกรายวิชา</option>{me.courses.map((c) => <option key={c.id} value={c.id}>{c.title} ({c.role})</option>)}</select></label>
-    {courseId && <div className="mb-4 flex flex-wrap items-center gap-3"><button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => {
-      await api("/me/active-course", { method: "PUT", body: json({ course_id: courseId }) });
-      setMe(await api<Me>("/me")); setNotice("ตั้งวิชาสำหรับข้อความ LINE ถัดไปแล้ว");
-    })}>ใช้วิชานี้ในแชต LINE</button><p className="text-sm">วิชาใน LINE: {me.courses.find((c) => c.id === me.active_course_id)?.title ?? (me.courses.length === 1 ? me.courses[0].title : "ยังไม่ได้เลือก")}</p></div>}
-    {!me.courses.length && <p className="mb-4 rounded-xl border border-border p-4">ยังไม่มีรายวิชา กรุณาแจ้งรหัสบัญชีจาก /me ให้ผู้ดูแลเพิ่มสมาชิก ไม่มีการให้สิทธิ์ครูจากการเลือกบทบาทเอง</p>}
-    <nav aria-label="เมนูหลัก" className="mb-6 flex flex-wrap gap-2">{[...tabs, ...(teacher ? [["course", "จัดการวิชา / ตรวจคำตอบ"], ["acceptance", "หลักฐานตรวจรับ"]] as [View, string][] : []), ...(me.is_admin ? [["admin", "ผู้ดูแลระบบ"]] as [View, string][] : [])].map(([id, title]) => <button type="button" key={id} aria-current={view === id ? "page" : undefined} className={view === id ? "pilot-button" : "pilot-secondary"} onClick={() => { setView(id); setError(""); setNotice(""); }}>{title}</button>)}</nav>
+    <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
+      <div><p className="text-sm font-medium text-secondary">LINE Learning</p>
+        <h1 className="text-2xl font-bold text-brand-navy">สวัสดี {me.display_name || "ผู้เรียน"}</h1>
+        <p className="mt-1 text-sm text-secondary">จัดการการเรียนได้ที่นี่ · ถาม AI ผ่านแชต LINE</p>
+      </div>
+      <Link href="/login" className="pilot-secondary text-sm">บัญชี LINE</Link>
+    </header>
+    <div className="mb-5 rounded-2xl border border-border bg-white p-4 sm:p-5">
+      <label className="block font-semibold">รายวิชาที่กำลังใช้
+        <select className="pilot-input mt-2" value={courseId} disabled={busy} onChange={(e) => {
+          setCourseId(e.target.value); setView("home"); setPractice(null); setFeedback("");
+          setProgress(null); setError(""); setNotice("");
+        }}>
+          <option value="">เลือกรายวิชา</option>
+          {me.courses.map((c) => <option key={c.id} value={c.id}>{c.title}{["teacher", "admin"].includes(c.role) ? " · ครู" : ""}</option>)}
+        </select>
+      </label>
+      {courseId && <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-secondary">AI ใน LINE ใช้วิชา: <strong>{me.courses.find((c) => c.id === me.active_course_id)?.title ?? "ยังไม่ได้เลือก"}</strong></p>
+        <button className="pilot-secondary text-sm" disabled={busy || me.active_course_id === courseId} onClick={() => void run(async () => {
+          await api("/me/active-course", { method:"PUT", body:json({course_id:courseId}) });
+          setMe(await api<Me>("/me")); setNotice("ตั้งวิชาสำหรับถาม AI ใน LINE เรียบร้อยแล้ว");
+        })}>{me.active_course_id === courseId ? "กำลังใช้วิชานี้ใน LINE" : "ใช้วิชานี้ในแชต LINE"}</button>
+      </div>}
+      {!me.courses.length && <p className="mt-3 text-sm text-secondary">ยังไม่มีรายวิชา กรุณาติดต่อครูหรือผู้ดูแลเพื่อเพิ่มสมาชิก</p>}
+    </div>
+    <nav aria-label="หมวดหมู่หลัก" className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      {menu.map((item) => <button key={item.id} type="button"
+        aria-current={group === item.id ? "page" : undefined}
+        onClick={() => {setView(item.target);setError("");setNotice("");}}
+        className={`min-h-22 rounded-2xl border p-3 text-left transition focus-visible:outline-2 focus-visible:outline-brand-blue ${group === item.id ? "border-brand-blue bg-brand-mint/50 text-brand-navy shadow-sm" : "border-border bg-white hover:border-brand-blue"}`}>
+        <span className="block font-semibold">{item.label}</span>
+        <span className="mt-1 block text-xs text-secondary">{item.subtitle}</span>
+      </button>)}
+    </nav>
+    {subviews.length > 0 && <nav aria-label="เมนูย่อย" className="mb-5 flex flex-wrap gap-2 rounded-2xl bg-surface-soft p-2">
+      {subviews.map(([id, label]) => <button type="button" key={id}
+        aria-current={view === id ? "page" : undefined}
+        onClick={() => {setView(id);setError("");setNotice("");}}
+        className={view === id ? "pilot-button" : "pilot-secondary"}>{label}</button>)}
+    </nav>}
     {error && <p role="alert" className="mb-4 rounded-xl border border-danger p-3 text-red-800">{error}</p>}
     {notice && <p role="status" className="mb-4 rounded-xl bg-brand-mint p-3">{notice}</p>}
     <section className="rounded-2xl border border-border bg-surface p-5 shadow-sm" aria-busy={busy}>
