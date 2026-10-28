@@ -3,10 +3,14 @@ import test from "node:test";
 import { getRequestedDashboardView, getDashboardHref } from "../lib/dashboardView.ts";
 
 test("opens every supported Rich Menu target", () => {
-  for (const view of ["ask", "tasks", "practice", "plans", "progress", "documents", "settings", "course", "acceptance"]) {
+  for (const view of ["tasks", "practice", "plans", "progress", "documents", "settings", "course", "acceptance"]) {
     assert.equal(getRequestedDashboardView(`?view=${view}`), view);
     assert.equal(getDashboardHref(`?view=${view}`), `/?view=${view}`);
   }
+});
+test("redirects old AI chat links to a supported LIFF page", () => {
+  assert.equal(getRequestedDashboardView("?view=ask"), "tasks");
+  assert.equal(getDashboardHref("?view=ask"), "/?view=tasks");
 });
 test("falls back safely for no view or unsupported destinations", () => {
   assert.equal(getRequestedDashboardView(""), null);
