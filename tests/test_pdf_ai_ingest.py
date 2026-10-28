@@ -36,6 +36,25 @@ class GeminiPdfReaderTests(unittest.TestCase):
         args = client.__enter__.return_value.models.generate_content.call_args
         self.assertEqual(args.kwargs["contents"][0].inline_data.mime_type, "application/pdf")
 
+    def test_reads_two_pages_with_repeated_semantic_topic(self):
+        client = MagicMock()
+        client.__enter__.return_value.models.generate_content.side_effect = [
+            SimpleNamespace(text=json.dumps({"sections": [
+                {"topic": "กฎข้อที่ 2 ของนิวตัน", "text": "F = ma", "keywords": ["แรง"]}],
+                "warnings": []}, ensure_ascii=False)),
+            SimpleNamespace(text=json.dumps({"sections": [
+                {"topic": "กฎข้อที่ 2 ของนิวตัน", "text": "a = F/m", "keywords": ["ความเร่ง"]}],
+                "warnings": []}, ensure_ascii=False)),
+        ]
+        with patch("components.pdf_ai.LLM_API_KEY", "test-only"), \\
+             patch("components.pdf_ai.PDF_AI_MAX_PAGES", 10), \\
+             patch("components.pdf_ai.genai.Client", return_value=client):
+            result = read_pdf_with_gemini(self.pdf(2))
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0][4][0]["topic"], result[1][4][0]["topic"])
+        self.assertIn("กฎข้อที่ 2 ของนิวตัน",
+            client.__enter__.return_value.models.generate_content.call_args_list[1].kwargs["contents"][1])
+
     def test_requires_key_and_rejects_bad_pdf(self):
         with patch("components.pdf_ai.LLM_API_KEY", None):
             with self.assertRaisesRegex(ValueError, "PDF_AI_KEY_NOT_CONFIGURED"):
