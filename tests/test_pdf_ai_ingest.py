@@ -21,14 +21,17 @@ class GeminiPdfReaderTests(unittest.TestCase):
     def test_extracts_pdf_page_and_keywords(self):
         client = MagicMock()
         client.__enter__.return_value.models.generate_content.return_value = SimpleNamespace(
-            text=json.dumps({"text": "ฟิสิกส์\n\nF = ma", "keywords": ["ฟิสิกส์", "แรง", "แรง", "มวล"], "warnings": []},
-                ensure_ascii=False))
+            text=json.dumps({"sections": [{"topic": "กฎข้อที่ 2 ของนิวตัน",
+                "text": "ฟิสิกส์\n\nF = ma", "keywords": ["ฟิสิกส์", "แรง", "แรง", "มวล"]}],
+                "warnings": []}, ensure_ascii=False))
         events = []
         with patch("components.pdf_ai.LLM_API_KEY", "test-only"), \
              patch("components.pdf_ai.PDF_AI_MAX_PAGES", 10), \
              patch("components.pdf_ai.genai.Client", return_value=client):
             result = read_pdf_with_gemini(self.pdf(), on_page=lambda n, total: events.append((n, total)))
-        self.assertEqual(result, [(1, "ฟิสิกส์\n\nF = ma", ["ฟิสิกส์", "แรง", "มวล"], None)])
+        self.assertEqual(result, [(1, "ฟิสิกส์\n\nF = ma", ["ฟิสิกส์", "แรง", "มวล"],
+            None, [{"topic": "กฎข้อที่ 2 ของนิวตัน", "text": "ฟิสิกส์\n\nF = ma",
+                "keywords": ["ฟิสิกส์", "แรง", "มวล"]}])])
         self.assertEqual(events, [(1, 1)])
         args = client.__enter__.return_value.models.generate_content.call_args
         self.assertEqual(args.kwargs["contents"][0].inline_data.mime_type, "application/pdf")
