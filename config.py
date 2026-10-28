@@ -23,6 +23,8 @@ S3_REGION = os.getenv("S3_REGION", "auto")
 S3_ADDRESSING_STYLE = os.getenv("S3_ADDRESSING_STYLE", "virtual")
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
 LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+PDF_READER_MODEL = os.getenv("PDF_READER_MODEL", "gemini-2.5-flash")
+PDF_AI_MAX_PAGES = int(os.getenv("PDF_AI_MAX_PAGES", "40"))
 LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY")
 EMBEDDINGS_ENABLED = os.getenv("EMBEDDINGS_ENABLED", "false").lower() == "true"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
