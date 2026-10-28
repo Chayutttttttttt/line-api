@@ -12,7 +12,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from pypdf import PdfReader, PdfWriter
 
-from config import LLM_API_KEY, PDF_READER_MODEL
+from config import LLM_API_KEY, PDF_READER_MODEL, PDF_AI_MAX_PAGES
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +44,8 @@ def read_pdf_with_gemini(data: bytes, on_page=None) -> list[tuple[int, str, list
     if not LLM_API_KEY:
         raise ValueError("PDF_AI_KEY_NOT_CONFIGURED")
     try:
-        reader = PdfReader(BytesIO(data), strict=True)
-        if reader.is_encrypted or not 1 <= len(reader.pages) <= 200:
+        reader = PdfReader(BytesIO(data), strict=False)
+        if reader.is_encrypted or not 1 <= len(reader.pages) <= min(200, PDF_AI_MAX_PAGES):
             raise ValueError("ENCRYPTED_OR_TOO_MANY_PAGES")
     except ValueError:
         raise
