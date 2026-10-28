@@ -94,6 +94,10 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         {uploadPurpose === "evidence" && <input type="hidden" name="material_type" value="lesson" />}
         <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-medium">เพิ่มรุ่นให้เอกสารเดิม (ถ้าต้องการ)</summary><label>เลือกไฟล์เดิม<select name="document_id" className="pilot-input" value={uploadDocId} onChange={(e) => { const id = e.target.value; const existing = versions.find((v) => v.document_id === id); setUploadDocId(id); if (existing) { setUploadPurpose(existing.purpose); setUploadType(existing.material_type); setUploadTopic(existing.topic_id ?? ""); } }}><option value="">สร้างเอกสารใหม่</option>{versions.filter((v, i, all) => all.findIndex((x) => x.document_id === v.document_id) === i).map((v) => <option key={v.document_id} value={v.document_id}>{v.title}</option>)}</select></label></details>
         <label>ไฟล์ PDF, DOCX หรือ TXT ไม่เกิน 10 MB<input type="file" name="file" required accept=".pdf,.docx,.txt" className="pilot-input" /></label>
+        {uploadPurpose === "teaching" && <label className="flex items-start gap-3 rounded-xl bg-surface-soft p-3 text-sm">
+          <input type="checkbox" required className="mt-1 h-5 w-5 shrink-0" />
+          <span>ฉันมีสิทธิ์ใช้งานเอกสารนี้ และรับทราบว่าไฟล์ PDF จะถูกส่งให้ Gemini อ่านเนื้อหาเพื่อช่วยสร้างข้อความและคำสำคัญ ก่อนให้ครูตรวจอนุมัติ</span>
+        </label>}
         <button disabled={busy} className="pilot-button">เพิ่มไฟล์สอนในรายวิชา</button>
       </form>}
       {documentTab === "library" && <><div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status === "review" ? "รอครูตรวจ" : v.status === "published" ? "อนุมัติแล้ว" : v.status === "failed" ? "อ่านไม่สำเร็จ" : "กำลังดำเนินการ"}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
@@ -206,7 +210,7 @@ function QuestionForm({ topics, versions, busy, onSave }: { topics: {id: string;
     void onSave({ topic_id: value(form, "topic"), source_version_id: value(form, "source"), prompt: value(form, "prompt"), hint: value(form, "hint"), explanation: value(form, "explanation"), answer_type: type, grading_spec: spec });
   }}>
     <label className="block">หัวข้อ<select name="topic" required className="pilot-input">{topics.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}</select></label>
-    <label className="block">แหล่งเอกสาร<select name="source" required className="pilot-input">{versions.filter((v) => v.purpose === "teaching" && ["review", "published"].includes(v.status)).map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label>
+    <label className="block">แหล่งเอกสาร<select name="source" required className="pilot-input">{versions.filter((v) => v.purpose === "teaching" && v.status === "published").map((v) => <option key={v.id} value={v.id}>{v.title} รุ่น {v.version}</option>)}</select></label>
     {[["prompt", "โจทย์"], ["hint", "คำใบ้"], ["explanation", "เฉลย / แนวคำตอบสำหรับครู"]].map(([name, label]) => <label className="block" key={name}>{label}<textarea required name={name} maxLength={2000} className="pilot-input" /></label>)}
     <label className="block">รูปแบบคำตอบ<select value={type} onChange={(e) => setType(e.target.value)} className="pilot-input">
       {[["multiple_choice", "ปรนัย"], ["boolean", "จริง / เท็จ"], ["numeric", "ตัวเลข"], ["short_text", "คำตอบสั้นตรงตามรายการ"], ["manual", "คำตอบอธิบาย — ครูตรวจ"], ["integer_set", "เซตจำนวนเต็ม"]].map(([id, label]) => <option key={id} value={id}>{label}</option>)}
