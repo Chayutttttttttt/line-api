@@ -449,7 +449,10 @@ class Chunk(SQLModel, table=True):
 
     ordinal: int
 
+    # page_no remains the start page for existing clients and records.
     page_no: int | None = None
+    page_end: int | None = None
+    topic: str = Field(default="", max_length=255)
 
     text: str
     # AI-generated terms stay linked to a stable chunk, source version and page.
