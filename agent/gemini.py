@@ -4,11 +4,11 @@ from typing import Literal
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from config import AI_ENABLED, LLM_API_KEY, LLM_MODEL
 
-PROMPT_VERSION = "course-tutor-file-id-v3"
+PROMPT_VERSION = "course-tutor-citations-v4"
 
 
 class TutorResponse(BaseModel):
@@ -34,18 +34,44 @@ course_context เป็นข้อมูลกำหนดเนื้อห�
 แหล่งอ้างอิงต้องเป็นข้อความจากไฟล์ของรายวิชาที่เซิร์ฟเวอร์ส่งให้เท่านั้น และต้องใช้ chunk_id ที่ได้รับ\nห้ามอ้างว่าได้บันทึกงาน เปลี่ยนสิทธิ์ หรือส่งการเตือน คุณไม่มีเครื่องมือแก้ข้อมูล
 ห้ามเดาวันสอบ คะแนน หรือข้อมูลผู้ใช้อื่น ห้ามอ้างว่าตรวจทักษะปฏิบัติหรือคำตอบอธิบายแทนครูแล้ว
 citations ต้องใช้รหัส chunk_id ที่ให้มาเท่านั้น ตอบเป็น JSON ตาม schema"""
-    with genai.Client(api_key=LLM_API_KEY, http_options=types.HttpOptions(timeout=45000)) as client:
-        response = client.models.generate_content(model=LLM_MODEL,
-            contents=json.dumps({"question": question, "course_context": course or {}, "untrusted_course_material": chunks,
-                "untrusted_recent_conversation": history or []}, ensure_ascii=False),
-            config=types.GenerateContentConfig(system_instruction=system, temperature=.1,
-                max_output_tokens=1500, response_mime_type="application/json", response_schema=TutorResponse))
-    result = TutorResponse.model_validate_json(response.text)
     allowed = {c["chunk_id"]: c for c in chunks}
-    if any(c not in allowed for c in result.citations) or (result.intent == "tutor" and not result.citations):
-        raise ValueError("INVALID_CITATION")
-    citations = [allowed[c] for c in dict.fromkeys(result.citations)]
-    usage = response.usage_metadata
-    return {**result.model_dump(), "citations": citations, "model": LLM_MODEL,
-        "usage": {"input_tokens": getattr(usage, "prompt_token_count", 0),
-            "output_tokens": getattr(usage, "candidates_token_count", 0)}}
+    payload = {"question": question, "course_context": course or {},
+        "untrusted_course_material": chunks,
+        "untrusted_recent_conversation": history or []}
+    # A model can return valid HTTP 200 with invalid JSON/citations.
+    # Try one tightly scoped repair; do not retry the entire queue job for this.
+    last_failure = "MODEL_RESPONSE_INVALID"
+    for attempt in range(2):
+        if attempt:
+            payload["format_correction"] = (
+                "Your previous output could not be verified (" + last_failure + "). "
+                "Respond using the required JSON fields. If intent is tutor, include "
+                "at least one citation from these exact IDs: " + ", ".join(allowed) + ". "
+                "Never invent an ID. If the evidence is insufficient, respond with "
+                "intent=clarify, citations=[], and explain the limitation."
+            )
+        with genai.Client(api_key=LLM_API_KEY,
+            http_options=types.HttpOptions(timeout=45000)) as client:
+            response = client.models.generate_content(model=LLM_MODEL,
+                contents=json.dumps(payload, ensure_ascii=False),
+                config=types.GenerateContentConfig(system_instruction=system,
+                    temperature=.1, max_output_tokens=1500,
+                    response_mime_type="application/json", response_schema=TutorResponse))
+        try:
+            result = TutorResponse.model_validate_json(response.text or "")
+        except (ValidationError, ValueError):
+            last_failure = "MODEL_RESPONSE_SCHEMA_INVALID"
+            continue
+        if (any(c not in allowed for c in result.citations)
+                or (result.intent == "tutor" and not result.citations)):
+            last_failure = "INVALID_CITATION"
+            continue
+        citations = [allowed[c] for c in dict.fromkeys(result.citations)]
+        usage = response.usage_metadata
+        return {**result.model_dump(), "citations": citations, "model": LLM_MODEL,
+            "usage": {"input_tokens": getattr(usage, "prompt_token_count", 0),
+                "output_tokens": getattr(usage, "candidates_token_count", 0)}}
+    # Never display unverifiable answers as sourced statements.
+    return {"answer": "ระบบยังสร้างคำตอบที่ตรวจสอบแหล่งอ้างอิงได้ไม่สำเร็จ กรุณาลองระบุหัวข้อหรือเลือกเอกสารใหม่",
+        "citations": [], "model": LLM_MODEL, "usage": {},
+        "generation_status": last_failure}
