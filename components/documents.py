@@ -227,6 +227,32 @@ def edit_chunk(version_id: UUID, chunk_id: UUID, data: ChunkEdit,
     return {"revision": version.revision}
 
 
+@router.post("/documents/versions/{version_id}/index")
+def reindex_embeddings(version_id: UUID, user: User = Depends(current_user),
+    db: Session = Depends(get_session)):
+    """Queue embeddings for already uploaded teaching files (without re-upload)."""
+    if not EMBEDDINGS_ENABLED:
+        raise HTTPException(409, "EMBEDDINGS_DISABLED")
+    document, version = version_access(db, user, version_id, teacher=True, lock=True)
+    if document.purpose != "teaching" or version.status not in TEACHING_READY_STATUSES:
+        raise HTTPException(409, "DOCUMENT_NOT_READY_FOR_INDEXING")
+    pending = db.exec(select(Job).where(Job.kind == "embed",
+        Job.state.in_(["queued", "retry", "running"]))).all()
+    if any(job.payload.get("version_id") == str(version_id) for job in pending):
+        raise HTTPException(409, "DOCUMENT_INDEXING_ALREADY_QUEUED")
+    # Only enqueue chunks that are not indexed with the configured model.
+    chunks = db.exec(select(Chunk).where(Chunk.version_id == version_id)
+        .order_by(Chunk.ordinal)).all()
+    batches = sorted({c.ordinal // 8 for c in chunks
+        if c.embedding is None or c.embedding_model != EMBEDDING_MODEL})
+    for batch in batches:
+        db.add(Job(kind="embed", user_id=None,
+            payload={"version_id": str(version_id), "start": batch * 8, "limit": 8}))
+    db.add(AuditEvent(actor_id=user.id, action="document.index", object_id=version_id))
+    db.commit()
+    return {"version_id": version_id, "queued_batches": len(batches)}
+
+
 class ReviewRequest(BaseModel):
     version: int = Field(ge=1)
     expected_revision: int = Field(ge=1)
