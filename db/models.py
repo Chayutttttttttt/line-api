@@ -341,6 +341,9 @@ class Document(SQLModel, table=True):
     __table_args__ = (ForeignKeyConstraint(["course_id", "school_id"], ["courses.id", "courses.school_id"], name="fk_document_course_school"),)
 
     purpose: str = "teaching"
+    # Course teaching sources: lesson / textbook / worksheet / solution / slides / reference.
+    material_type: str = Field(default="lesson", max_length=32)
+    topic_id: UUID | None = Field(default=None, foreign_key="topics.id")
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -394,6 +397,7 @@ class DocumentVersion(SQLModel, table=True):
     content_type: str = "application/pdf"
     size_bytes: int = 0
     extraction_error: str | None = None
+    extraction_warning: str | None = None
 
     status: str = Field(
         default="uploaded",
