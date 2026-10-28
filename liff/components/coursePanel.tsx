@@ -16,6 +16,7 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [tab, setTab] = useState<"reviews" | "topics" | "course">("reviews");
 
   useEffect(() => {
     let active = true;
@@ -40,12 +41,17 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
   }
 
   return <div className="space-y-6" aria-busy={busy}>
-    <h2 className="pilot-heading">จัดการรายวิชาและตรวจคำตอบ</h2>
+    <h2 className="pilot-heading">จัดการชั้นเรียน</h2>
+    <nav aria-label="งานของครู" className="grid gap-2 sm:grid-cols-3">
+      {([["reviews","ตรวจคำตอบนักเรียน"],["topics","จัดหัวข้อบทเรียน"],["course","ตั้งค่ารายวิชา"]] as const).map(([id,label]) =>
+        <button type="button" key={id} className={tab === id ? "pilot-button" : "pilot-secondary"}
+          aria-current={tab === id ? "page" : undefined} onClick={() => {setTab(id);setError("");setNotice("");}}>{label}</button>)}
+    </nav>
     {error && <p role="alert" className="text-red-800">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     {!course && !error && <p role="status">กำลังโหลดรายวิชา…</p>}
     {course && <>
-      <form key={course.revision} className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
+      {tab === "course" && <><form key={course.revision} className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
         await api(`/courses/${courseId}`, { method: "PUT", body: body({ ...settings(form), expected_revision: course.revision }) });
         await refresh(); setNotice("บันทึกขอบเขตแล้ว กรุณาจัดชุดประเมินให้ตรงขอบเขตใหม่ก่อนตรวจรับ");
       }); }}>
@@ -58,8 +64,8 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
           await api("/courses", { method: "POST", body: body({ ...settings(form), school_id: course.school_id }) });
           await onChanged(); target.reset(); setNotice("สร้างวิชาแล้ว เลือกวิชาใหม่จากเมนูรายวิชา ผู้ดูแลเพิ่มสมาชิกได้ตามเดิม");
         }); }}><CourseFields /><button disabled={busy} className="pilot-button">สร้างรายวิชา</button></form>
-      </details>
-      <section className="space-y-3"><h3 className="font-semibold">หัวข้อและคำค้น</h3><p className="text-sm">คำค้นช่วยจับคำศัพท์และคำเรียกอื่น เช่น แรง, force แยกด้วยจุลภาค</p>
+      </details></>}
+      {tab === "topics" && <section className="space-y-3"><h3 className="font-semibold">หัวข้อบทเรียนและคำค้นเพิ่มเติม</h3><p className="text-sm">คำค้นช่วยจับคำศัพท์และคำเรียกอื่น เช่น แรง, force แยกด้วยจุลภาค</p>
         {[...topics, { id: "", title: "", keywords: [] }].map((topic) => <form key={`${topic.id}-${course.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
           await api(`/courses/${courseId}/topics${topic.id ? `/${topic.id}` : ""}`, { method: topic.id ? "PUT" : "POST", body: body({ title: value(form, "title"), keywords: value(form, "keywords").split(",").map((v) => v.trim()).filter(Boolean), expected_revision: course.revision }) });
           await refresh(); setNotice("บันทึกหัวข้อแล้ว");
@@ -68,8 +74,7 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
           <label className="block">คำค้นเพิ่มเติม<input name="keywords" defaultValue={topic.keywords.join(", ")} className="pilot-input" /></label>
           <button disabled={busy} className="pilot-secondary">{topic.id ? "แก้ไขหัวข้อ" : "เพิ่มหัวข้อ"}</button>
         </form>)}
-      </section>
-      <section className="space-y-3"><h3 className="font-semibold">คำตอบรอครูตรวจ</h3>
+      </section>      {tab === "reviews" && <section className="space-y-3"><h3 className="font-semibold">คำตอบรอครูตรวจ</h3>
         <button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>โหลดรายการล่าสุด</button>
         {!reviews.length && <p>ไม่มีคำตอบรอตรวจ</p>}
         {reviews.map((review) => <form key={review.id} className="space-y-3 rounded-xl border border-border p-4" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
@@ -83,7 +88,7 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
           <label className="block">ข้อเสนอแนะ<textarea name="feedback" required maxLength={4000} className="pilot-input" /></label>
           <button disabled={busy} className="pilot-button">ยืนยันคะแนน</button>
         </form>)}
-      </section>
+      </section>}
     </>}
   </div>;
 }
