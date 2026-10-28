@@ -141,6 +141,13 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         <p className="text-sm">{detail.document.purpose === "teaching" && detail.version.status === "published" ? "ครูอนุมัติแล้ว: AI ใน LINE ใช้เอกสารนี้ได้" : detail.version.status === "review" ? "รอตรวจ: AI และนักเรียนยังใช้เอกสารนี้ไม่ได้" : "ไฟล์นี้ยังไม่พร้อมใช้กับ AI"}</p>
         {detail.version.extraction_error && <p className="text-xs text-secondary">รหัสข้อผิดพลาดจาก Worker: {detail.version.extraction_error}</p>}
         {detail.version.extraction_warning && <p role="alert" className="rounded-xl border border-border p-3 text-sm">AI พบส่วนที่อ่านไม่ชัด กรุณาตรวจเทียบกับ PDF: {detail.version.extraction_warning}</p>}
+        <section className="space-y-2 rounded-xl border border-border p-3">
+          <p className="font-semibold text-sm">ล้างไฟล์ที่ไม่ต้องการ</p>
+          <p className="text-xs text-secondary">ลบ PDF/DOCX/TXT ต้นฉบับ พร้อม Chunks, Keywords, Embeddings และประวัติการตรวจของรุ่นนี้อย่างถาวร ถ้าไฟล์อนุมัติแล้วต้องถอนก่อน และไม่สามารถลบขณะ Worker กำลังทำงานหรือมีแบบฝึกอ้างอิงอยู่</p>
+          <button type="button" className="pilot-secondary text-red-800" disabled={busy || ["published", "uploaded", "processing"].includes(detail.version.status)} onClick={() => void removeVersion()}>ลบไฟล์รุ่นนี้ถาวร</button>
+          {detail.version.status === "published" && <p className="text-xs">ไฟล์นี้อนุมัติแล้ว กรุณาถอนการใช้ก่อนลบ</p>}
+          {["uploaded", "processing"].includes(detail.version.status) && <p className="text-xs">รออ่านไฟล์เสร็จหรือสิ้นสุดงานก่อนจึงลบได้</p>}
+        </section>
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
         {detail.document.purpose === "teaching" && detail.version.status === "published" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => {
           const result = await api<{queued_batches: number}>(`/documents/versions/${selectedId}/index`, {method: "POST"});
@@ -191,13 +198,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
           </form>
         </section>}
         {["review", "published"].includes(detail.version.status) && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว สามารถลบถาวรได้เมื่อไม่มีข้อมูลอื่นอ้างอิง"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
-        <section className="space-y-2 rounded-xl border border-border p-3">
-          <p className="font-semibold text-sm">ล้างไฟล์ที่ไม่ต้องการ</p>
-          <p className="text-xs text-secondary">ลบ PDF/DOCX/TXT ต้นฉบับ พร้อม Chunks, Keywords, Embeddings และประวัติการตรวจของรุ่นนี้อย่างถาวร ถ้าไฟล์อนุมัติแล้วต้องถอนก่อน และไม่สามารถลบขณะ Worker กำลังทำงานหรือมีแบบฝึกอ้างอิงอยู่</p>
-          <button type="button" className="pilot-secondary text-red-800" disabled={busy || ["published", "uploaded", "processing"].includes(detail.version.status)} onClick={() => void removeVersion()}>ลบไฟล์รุ่นนี้ถาวร</button>
-          {detail.version.status === "published" && <p className="text-xs">ไฟล์นี้อนุมัติแล้ว กรุณาถอนการใช้ก่อนลบ</p>}
-          {["uploaded", "processing"].includes(detail.version.status) && <p className="text-xs">รออ่านไฟล์เสร็จหรือสิ้นสุดงานก่อนจึงลบได้</p>}
-        </section>
+
         <h3 className="font-semibold">ประวัติผลตรวจ</h3>{detail.reviews.map((r) => <p key={r.id} className="rounded-xl bg-surface-soft p-3 text-sm break-all">{r.decision} · {r.scope} · {new Date(r.created_at).toLocaleString("th-TH")}<br />ผู้ตรวจ {r.reviewer_id}<br />{r.notes}<br />คะแนน 0–2: {Object.entries(r.rubric).map(([key, score]) => `${key} ${score}`).join(" · ")}</p>)}
       </article>}</>}
       {documentTab === "questions" && <section className="rounded-xl border border-border p-4">
