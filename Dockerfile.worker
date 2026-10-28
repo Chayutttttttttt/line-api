@@ -12,7 +12,8 @@ COPY . .
 RUN python -m compileall -q agent components db worker tests
 RUN python -m unittest discover -s tests -p 'test_pdf_ai_ingest.py' -v \
  && python -m unittest discover -s tests -p 'test_semantic_chunking.py' -v \
- && python -m unittest discover -s tests -p 'test_material_pipeline.py' -v
+ && python -m unittest discover -s tests -p 'test_material_pipeline.py' -v \
+ && python -m unittest discover -s tests -p 'test_document_deletion.py' -v
 
 # Background worker; must not start the FastAPI HTTP server.
 CMD ["python", "-m", "worker.run"]
