@@ -19,10 +19,11 @@ from sqlmodel import Session, select
 from components.semantic_chunking import build_semantic_chunks
 from components.embeddings import embed_query
 from components.login import course_access, current_user
-from components.storage import put_file, read_file
+from components.storage import put_file, read_file, delete_file
 from config import EMBEDDINGS_ENABLED, EMBEDDING_MODEL, MAX_UPLOAD_BYTES
 from db.database import get_session
-from db.models import (AuditEvent, Chunk, ContentReview, Document, DocumentVersion, Job, Topic, User, utc_now)
+from db.models import (AcceptanceEvidence, AuditEvent, Chunk, ContentReview, Document,
+    DocumentVersion, Job, Question, Topic, User, utc_now)
 
 router = APIRouter(tags=["documents"])
 log = logging.getLogger(__name__)
@@ -341,6 +342,75 @@ def withdraw(version_id: UUID, data: RevisionRequest, user: User = Depends(curre
     db.add(AuditEvent(actor_id=user.id, action="document.withdraw", object_id=version.id))
     db.commit()
     return {"status": version.status, "revision": version.revision}
+
+
+@router.delete("/documents/versions/{version_id}")
+def delete_document_version(version_id: UUID, data: RevisionRequest,
+    user: User = Depends(current_user), db: Session = Depends(get_session)):
+    """Delete only an unused source version and its private object, with retry recovery.
+
+    Mark as deleting first so neither learner retrieval nor teacher approval can
+    use it while the S3 call is underway. If storage fails, the marker stays and
+    the teacher can retry without losing the pointer to the object.
+    """
+    document, version = version_access(db, user, version_id, teacher=True, lock=True)
+    if version.status != "deleting":
+        if version.revision != data.expected_revision:
+            raise HTTPException(409, "VERSION_CONFLICT")
+        if version.status == "published":
+            raise HTTPException(409, "WITHDRAW_PUBLISHED_DOCUMENT_FIRST")
+        if version.status not in {"failed", "review", "withdrawn", "uploaded", "processing"}:
+            raise HTTPException(409, "DOCUMENT_CANNOT_BE_DELETED")
+        # A running ingest may already be reading the object outside SQL. Do
+        # not remove it until no live worker can create new chunks.
+        jobs = db.exec(select(Job).where(
+            Job.kind.in_(["ingest", "embed"]),
+            Job.payload.contains({"version_id": str(version_id)})).with_for_update()).all()
+        if any(job.state in {"queued", "retry", "running"} for job in jobs):
+            raise HTTPException(409, "DOCUMENT_JOB_STILL_RUNNING")
+        if db.exec(select(Question.id).where(Question.source_version_id == version_id).limit(1)).first():
+            raise HTTPException(409, "DOCUMENT_USED_BY_QUESTIONS")
+        if db.exec(select(AcceptanceEvidence.id).where(
+            (AcceptanceEvidence.version_id == version_id)
+            | (AcceptanceEvidence.artifact_version_id == version_id)).limit(1)).first():
+            raise HTTPException(409, "DOCUMENT_USED_BY_EVIDENCE")
+        version.status = "deleting"
+        version.revision += 1
+        db.add(version)
+        db.commit()
+    storage_key = version.storage_key
+
+    # A single-object delete is idempotent. Never delete the Railway bucket.
+    delete_file(storage_key)
+
+    # Delete DB records only after object storage confirms deletion.
+    document, version = version_access(db, user, version_id, teacher=True, lock=True)
+    if version.status != "deleting":
+        raise HTTPException(409, "VERSION_CONFLICT")
+    # Recheck references before the final delete to avoid silent cascade.
+    if db.exec(select(Question.id).where(Question.source_version_id == version_id).limit(1)).first():
+        raise HTTPException(409, "DOCUMENT_USED_BY_QUESTIONS")
+    if db.exec(select(AcceptanceEvidence.id).where(
+        (AcceptanceEvidence.version_id == version_id)
+        | (AcceptanceEvidence.artifact_version_id == version_id)).limit(1)).first():
+        raise HTTPException(409, "DOCUMENT_USED_BY_EVIDENCE")
+    chunk_count = db.exec(delete(Chunk).where(Chunk.version_id == version_id)).rowcount
+    review_count = db.exec(delete(ContentReview).where(ContentReview.version_id == version_id)).rowcount
+    job_count = db.exec(delete(Job).where(
+        Job.kind.in_(["ingest", "embed"]),
+        Job.payload.contains({"version_id": str(version_id)}))).rowcount
+    db.delete(version)
+    db.flush()
+    # Preserve other versions of the same document.
+    keep_document = db.exec(select(DocumentVersion.id).where(
+        DocumentVersion.document_id == document.id).limit(1)).first()
+    if not keep_document:
+        db.delete(document)
+    db.add(AuditEvent(actor_id=user.id, action="document.delete", object_id=version_id))
+    db.commit()
+    return {"deleted": True, "version_id": str(version_id), "object_deleted": True,
+        "chunks_deleted": chunk_count, "reviews_deleted": review_count,
+        "jobs_deleted": job_count, "document_deleted": not bool(keep_document)}
 
 
 @router.get("/documents/versions/{version_id}/file")
