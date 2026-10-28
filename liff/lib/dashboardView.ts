@@ -1,6 +1,6 @@
 /** Validated LIFF Rich Menu targets. Never navigate to arbitrary URLs from a query string. */
 export const DASHBOARD_VIEWS = [
-  "ask", "tasks", "practice", "plans", "progress",
+  "home", "ask", "tasks", "practice", "plans", "progress",
   "documents", "acceptance", "course", "settings", "admin",
 ] as const;
 
@@ -10,7 +10,7 @@ const allowedViews: ReadonlySet<string> = new Set(DASHBOARD_VIEWS);
 
 export function getRequestedDashboardView(search: string): DashboardView | null {
   const view = new URLSearchParams(search).get("view");
-  return view && allowedViews.has(view) ? (view as DashboardView) : null;
+  // Old LINE Rich Menu links to ?view=ask now open the homepage; no web AI chat.\n  return view === "ask" ? "home" : view && allowedViews.has(view) ? (view as DashboardView) : null;
 }
 
 /** Keep the requested tab through the separate LINE login page. */
