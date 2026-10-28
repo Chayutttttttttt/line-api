@@ -21,6 +21,8 @@ from sqlmodel import Session, select
 from agent.gemini import PROMPT_VERSION, generate_answer
 from components.documents import TEACHING_READY_STATUSES, ingest, search_materials
 from components.embeddings import embed_document_batch
+from components.pdf_ai import read_pdf_with_gemini
+from components.storage import read_file
 from components.login import course_access
 from config import (CHANNEL_ACCESS_TOKEN, EMBEDDING_MODEL, EMBEDDINGS_ENABLED, JOB_TIMEOUT_SECONDS, LINE_PROVIDER_ID,
     MAX_DAILY_AI_REQUESTS, MAX_JOB_ATTEMPTS)
@@ -69,26 +71,45 @@ def process_job(claim):
     job_id, attempt = claim["id"], claim["attempts"]
     try:
         if claim["kind"] == "ingest":
+            version_id = UUID(claim["payload"]["version_id"])
             with Session(engine, expire_on_commit=False) as db:
                 job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
                 if job.state != "running" or job.attempts != attempt:
                     return
-                version_id = UUID(job.payload["version_id"])
-                ingest(db, version_id)
                 version = db.get(DocumentVersion, version_id)
-                document = db.get(Document, version.document_id) if version else None
-                if (EMBEDDINGS_ENABLED and version
-                        and version.status == "published"
-                        and document and document.purpose == "teaching"):
-                    chunk_ids = db.exec(select(Chunk.id).where(
-                        Chunk.version_id == version_id).order_by(Chunk.ordinal)).all()
-                    # Short independent batches avoid one slow embedding request
-                    # blocking the entire worker queue for minutes.
-                    for offset in range(0, len(chunk_ids), 8):
-                        db.add(Job(kind="embed", user_id=None,
-                            payload={"version_id": str(version_id),
-                                     "start": offset, "limit": 8}))
-                job.state = "done"
+                if not version or version.status not in ("uploaded", "processing"):
+                    job.state, job.updated_at = "done", utc_now()
+                    db.add(job)
+                    db.commit()
+                    return
+                is_pdf = version.filename.lower().endswith(".pdf")
+                source_key, checksum = version.storage_key, version.checksum
+                version.status = "processing"
+                db.add(version)
+                db.commit()
+
+            # Gemini receives private PDF bytes outside any SQL transaction.
+            # We do not call PdfReader.extract_text() for PDF documents.
+            ai_pages = None
+            if is_pdf:
+                def renew_lease(page_no: int, total_pages: int):
+                    with Session(engine, expire_on_commit=False) as db:
+                        current = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
+                        if current.state != "running" or current.attempts != attempt:
+                            raise RuntimeError("INGEST_LEASE_LOST")
+                        current.lease_until = utc_now() + timedelta(seconds=max(90, JOB_TIMEOUT_SECONDS))
+                        current.updated_at = utc_now()
+                        db.add(current)
+                        db.commit()
+                ai_pages = read_pdf_with_gemini(read_file(source_key, checksum), on_page=renew_lease)
+            with Session(engine, expire_on_commit=False) as db:
+                job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
+                if (job.state != "running" or job.attempts != attempt
+                        or job.lease_until <= utc_now()):
+                    return
+                ingest(db, version_id, ai_pages=ai_pages)
+                # Embeddings will be queued only after a teacher approves publication.
+                job.state, job.updated_at = "done", utc_now()
                 db.add(job)
                 db.commit()
             return
@@ -216,6 +237,8 @@ def process_job(claim):
             "SOURCE_WITHDRAWN_DURING_GENERATION", "EMBEDDING_DIMENSION_MISMATCH",
             "INVALID_EMBEDDING", "EMBEDDING_COUNT_MISMATCH",
             "NO_SEARCHABLE_TEXT", "EMPTY_OR_TOO_LARGE_TEXT_USE_TEXT_PDF",
+            "PDF_AI_REQUIRED", "PDF_AI_KEY_NOT_CONFIGURED", "PDF_AI_RESPONSE_INVALID",
+            "PDF_PAGE_TOO_LONG", "PDF_AI_NO_SEARCHABLE_TEXT", "PDF_AI_TEXT_TOO_LARGE",
             "INVALID_PDF", "ENCRYPTED_OR_TOO_MANY_PAGES", "UNSUPPORTED_FILE"}
         code = str(error) if isinstance(error, ValueError) and str(error) in safe_codes else (
             "MODEL_SCHEMA_INVALID" if isinstance(error, ValidationError)
@@ -235,7 +258,7 @@ def process_job(claim):
             db.add(job)
             if job.kind == "ingest" and job.state == "failed":
                 version = db.get(DocumentVersion, UUID(job.payload["version_id"]))
-                version.status, version.extraction_error = "failed", type(error).__name__
+                version.status, version.extraction_error = "failed", code
                 db.add(version)
             db.commit()
 
