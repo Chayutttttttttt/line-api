@@ -13,6 +13,7 @@ COPY . .
 RUN python -m compileall -q agent components db worker tests
 RUN python -m unittest discover -s tests -p 'test_pdf_ai_ingest.py' -v \
  && python -m unittest discover -s tests -p 'test_semantic_chunking.py' -v \
- && python -m unittest discover -s tests -p 'test_material_pipeline.py' -v
+ && python -m unittest discover -s tests -p 'test_material_pipeline.py' -v \
+ && python -m unittest discover -s tests -p 'test_document_deletion.py' -v
 
 CMD ["sh", "-c", "python -m db.migrate && exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
