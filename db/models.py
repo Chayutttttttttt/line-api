@@ -452,6 +452,9 @@ class Chunk(SQLModel, table=True):
     page_no: int | None = None
 
     text: str
+    # AI-generated terms stay linked to a stable chunk, source version and page.
+    keywords: list[str] = Field(default_factory=list,
+        sa_column=Column(JSONB, nullable=False))
 
     # เปลี่ยน dimension ให้ตรงกับ embedding model ที่ใช้จริง
     embedding: Any | None = Field(
