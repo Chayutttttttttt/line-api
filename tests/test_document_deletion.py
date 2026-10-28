@@ -72,6 +72,26 @@ class DocumentDeletionTests(unittest.TestCase):
         self.db.commit.assert_not_called()
         storage.assert_not_called()
 
+    def test_referenced_questions_block_deletion(self):
+        self.db.exec.side_effect = [result(all_items=[]), result(first=uuid4())]
+        with patch("components.documents.version_access", return_value=(self.document, self.version)), \
+             patch("components.documents.delete_file") as storage:
+            with self.assertRaises(HTTPException) as raised:
+                self.delete()
+        self.assertEqual(raised.exception.detail, "DOCUMENT_USED_BY_QUESTIONS")
+        self.db.commit.assert_not_called()
+        storage.assert_not_called()
+
+    def test_referenced_evidence_blocks_deletion(self):
+        self.db.exec.side_effect = [result(all_items=[]), result(), result(first=uuid4())]
+        with patch("components.documents.version_access", return_value=(self.document, self.version)), \
+             patch("components.documents.delete_file") as storage:
+            with self.assertRaises(HTTPException) as raised:
+                self.delete()
+        self.assertEqual(raised.exception.detail, "DOCUMENT_USED_BY_EVIDENCE")
+        self.db.commit.assert_not_called()
+        storage.assert_not_called()
+
     def test_storage_failure_keeps_retry_marker_and_metadata(self):
         self.db.exec.side_effect = [result(all_items=[]), result(), result()]
         with patch("components.documents.version_access", return_value=(self.document, self.version)), \
