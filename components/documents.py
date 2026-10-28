@@ -300,9 +300,16 @@ def publish_document(document_id: UUID, data: ReviewRequest,
     db.add(review)
     version.revision += 1
     if data.decision == "approve":
-        # Prototype approval is recorded but never exposes content to students.
+        # Prototype review remains private; only pilot approval unlocks RAG.
         version.status = "published" if data.scope == "pilot" else "review"
         version.approved_by, version.approved_at = user.id, utc_now()
+        if (version.status == "published" and document.purpose == "teaching"
+                and EMBEDDINGS_ENABLED):
+            chunks = db.exec(select(Chunk).where(Chunk.version_id == version.id)
+                .order_by(Chunk.ordinal)).all()
+            for offset in range(0, len(chunks), 8):
+                db.add(Job(kind="embed", user_id=None,
+                    payload={"version_id": str(version.id), "start": offset, "limit": 8}))
     elif data.decision == "reject":
         version.status = "withdrawn"
     db.add(version)
