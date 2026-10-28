@@ -82,7 +82,8 @@ def process_job(claim):
                     db.add(job)
                     db.commit()
                     return
-                is_pdf = version.filename.lower().endswith(".pdf")
+                document = db.get(Document, version.document_id)
+                is_pdf = version.filename.lower().endswith(".pdf") and document.purpose == "teaching"
                 source_key, checksum = version.storage_key, version.checksum
                 version.status = "processing"
                 db.add(version)
