@@ -9,7 +9,7 @@ const materialNames: Record<MaterialType, string> = {
   solution: "เฉลย", slides: "สไลด์", reference: "เอกสารอ้างอิงเสริม",
 };
 type Version = { id: string; document_id: string; title: string; purpose: string; material_type: MaterialType; topic_id: string | null; version: number; revision: number; status: string; filename: string; checksum: string; extraction_error: string | null; extraction_warning: string | null };
-type Chunk = { id: string; text: string; page_no: number | null; keywords: string[] };
+type Chunk = { id: string; text: string; page_no: number | null; page_end: number | null; topic: string; keywords: string[] };
 type Detail = { document: { purpose: string; material_type: MaterialType; topic_id: string | null }; version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
 type Report = { readiness: string; blockers: string[] };
 type Question = { id: string; prompt: string; status: string };
@@ -115,16 +115,21 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
           setMessage(`ส่งสร้างดัชนีค้นหาแล้ว ${result.queued_batches} ชุด`);
         })}>สร้าง/อัปเดต Vector ของไฟล์นี้</button>}
 
-        <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-semibold">ตรวจหรือแก้ข้อความที่อ่านจากไฟล์ ({detail.chunks.length} ส่วน)</summary>
-          <div className="mt-3 space-y-3">{detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), keywords: value(form, "keywords").split(",").map((k) => k.trim()).filter(Boolean).slice(0, 12), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
-          <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
+        <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-semibold">ตรวจหัวข้อ ข้อความ และช่วงหน้าจากไฟล์ ({detail.chunks.length} Chunks)</summary>
+          <div className="mt-3 space-y-3">{detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), page_end: Number(value(form, "page_end")), topic: value(form, "topic"), keywords: value(form, "keywords").split(",").map((k) => k.trim()).filter(Boolean).slice(0, 12), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
+          <p className="text-sm font-semibold text-brand-navy">หัวข้อ: {chunk.topic || "ยังไม่ได้ระบุ"} · หน้า {chunk.page_no ?? "–"}{chunk.page_end && chunk.page_end !== chunk.page_no ? `–${chunk.page_end}` : ""}</p>
+          <label>หัวข้อของ Chunk<input name="topic" maxLength={255} defaultValue={chunk.topic || ""} className="pilot-input" disabled={detail.version.status !== "review"} placeholder="เช่น กฎข้อที่ 2 ของนิวตัน" /></label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label>หน้าเริ่มต้น<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
+            <label>หน้าสิ้นสุด<input name="page_end" type="number" min={1} max={1000} required defaultValue={chunk.page_end ?? chunk.page_no ?? ""} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
+          </div>
           <label>ข้อความที่สกัด<textarea name="text" required maxLength={10000} rows={7} defaultValue={chunk.text} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
           <label>คำสำคัญจาก AI (คั่นด้วยจุลภาค)<input name="keywords" className="pilot-input" defaultValue={(chunk.keywords ?? []).join(", ")} disabled={detail.version.status !== "review"} /></label>
           {detail.version.status === "review" && <button className="pilot-secondary" disabled={busy}>บันทึกข้อความและคำสำคัญ</button>}
         </form>)}</div></details>
         {detail.document.purpose === "teaching" && detail.version.status === "review" && <section className="space-y-4 rounded-2xl border-2 border-brand-blue p-4">
           <h3 className="text-lg font-semibold text-brand-navy">ตรวจเอกสารก่อนให้ AI ใช้</h3>
-          <p className="text-sm text-secondary">เทียบไฟล์ต้นฉบับกับข้อความและคำสำคัญที่ AI อ่านได้ หากผิดให้แก้ข้อความด้านบนก่อนติ๊กตรวจผ่าน</p>
+          <p className="text-sm text-secondary">เทียบไฟล์ต้นฉบับกับหัวข้อ ข้อความ ช่วงหน้าและคำสำคัญที่ AI อ่านได้ โดยเฉพาะ Chunk ที่ต่อเนื่องข้ามหน้า หากผิดให้แก้ก่อนติ๊กตรวจผ่าน</p>
           <form key={detail.version.id + "-" + detail.version.revision} className="space-y-4"
             onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget);
               void run(async () => {
