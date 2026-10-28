@@ -1,6 +1,6 @@
 /** Validated LIFF Rich Menu targets. Never navigate to arbitrary URLs from a query string. */
 export const DASHBOARD_VIEWS = [
-  "ask", "tasks", "practice", "plans", "progress",
+  "tasks", "practice", "plans", "progress",
   "documents", "acceptance", "course", "settings", "admin",
 ] as const;
 
@@ -10,6 +10,8 @@ const allowedViews: ReadonlySet<string> = new Set(DASHBOARD_VIEWS);
 
 export function getRequestedDashboardView(search: string): DashboardView | null {
   const view = new URLSearchParams(search).get("view");
+  // Old Rich Menu / LIFF links must not expose the removed AI chat screen.
+  if (view === "ask") return "tasks";
   return view && allowedViews.has(view) ? (view as DashboardView) : null;
 }
 
