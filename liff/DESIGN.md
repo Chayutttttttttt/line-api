@@ -716,9 +716,9 @@ Example:
 
 วันนี้ต้องการทำอะไร?
 
-[ ถาม AI ]
 [ เปิดเอกสาร ]
-[ ดูประวัติ ]
+[ งานของฉัน ]
+[ ฝึกโจทย์ ]
 
 ล่าสุด
 ────────────────────
@@ -782,41 +782,11 @@ Example progress:
 
 ---
 
-## 24. AI / Chat UI
+## 24. AI / Chat Channel
 
-If the LIFF app includes AI chat:
+AI lesson questions are handled in the LINE Official Account conversation, not the LIFF web app. LIFF must not contain an AI chat form or link to an obsolete `?view=ask` screen.
 
-User message:
-
-```css
-background: #4274D9;
-color: white;
-border-radius: 18px 18px 4px 18px;
-```
-
-Assistant message:
-
-```css
-background: #FFFFFF;
-color: #172033;
-border: 1px solid #E9EDF4;
-border-radius: 18px 18px 18px 4px;
-```
-
-Chat composer:
-
-```txt
-[ พิมพ์ข้อความ...                    ][↑]
-```
-
-Rules:
-
-- composer stays above keyboard
-- send button minimum 44px
-- support multiline input
-- display sending/error states
-- do not auto-scroll if the user is reading older messages
-- provide retry when sending fails
+Students select the active course in LIFF, then type their questions directly in LINE. Keep LIFF dedicated to materials, assignments, practice, plans, progress, and settings.
 
 ---
 
