@@ -15,6 +15,7 @@ from pypdf import PdfReader
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
+from components.chunking import chunk_page
 from components.login import course_access, current_user
 from components.storage import put_file, read_file
 from config import MAX_UPLOAD_BYTES
@@ -25,6 +26,7 @@ router = APIRouter(tags=["documents"])
 # Legacy teaching files in "review" are immediately usable; new ones become published
 # after successful extraction. Evidence files remain private and are never AI sources.
 TEACHING_READY_STATUSES = ("review", "published")
+MATERIAL_TYPES = ("lesson", "textbook", "worksheet", "solution", "slides", "reference")
 CHECKLIST = {
     "scope": "ขอบเขตและรายวิชาถูกต้อง",
     "definitions": "นิยาม แนวคิด และข้อเท็จจริงของรายวิชาถูกต้อง",
@@ -95,13 +97,19 @@ def ingest(db: Session, version_id: UUID):
     pages = extract_pages(data, version.filename)
     db.exec(delete(Chunk).where(Chunk.version_id == version.id))
     ordinal = 0
-    for page_no, text in pages:
-        # Character chunks preserve Thai text without pretending to be token counts.
-        for start in range(0, len(text), 1800):
-            part = text[start:start + 2100].strip()
-            if part:
-                db.add(Chunk(version_id=version.id, ordinal=ordinal, page_no=page_no, text=part))
-                ordinal += 1
+    blank_pages = [n for n, page_text in pages if n is not None and not page_text.strip()]
+    for page_no, page_text in pages:
+        # Keep page references authoritative; preserve equations and paragraph boundaries.
+        for part in chunk_page(page_text):
+            db.add(Chunk(version_id=version.id, ordinal=ordinal, page_no=page_no, text=part))
+            ordinal += 1
+    if not ordinal:
+        raise ValueError("NO_SEARCHABLE_TEXT")
+    # Detect image/scanned PDF pages rather than silently claiming they were read.
+    version.extraction_warning = (
+        "PAGES_WITHOUT_EXTRACTABLE_TEXT: " + ", ".join(map(str, blank_pages[:50]))
+        if blank_pages else None
+    )
     # Teaching material is ready as soon as extraction succeeds: no approval gate.
     version.status = "published" if db.get(Document, version.document_id).purpose == "teaching" else "review"
     version.revision += 1
@@ -116,6 +124,8 @@ def checklist(user: User = Depends(current_user)):
 @router.post("/documents", status_code=202)
 def upload_document(course_id: UUID = Form(), title: str = Form(min_length=1, max_length=255),
     purpose: Literal["teaching", "evidence"] = Form("teaching"),
+    material_type: Literal["lesson", "textbook", "worksheet", "solution", "slides", "reference"] = Form("lesson"),
+    topic_id: UUID | None = Form(None),
     document_id: UUID | None = Form(None), file: UploadFile = File(),
     user: User = Depends(current_user), db: Session = Depends(get_session)):
     course = course_access(db, user, course_id, teacher=True)
@@ -127,6 +137,12 @@ def upload_document(course_id: UUID = Form(), title: str = Form(min_length=1, ma
     data = file.file.read(MAX_UPLOAD_BYTES + 1)
     if not data or len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "EMPTY_OR_TOO_LARGE_FILE")
+    if purpose == "evidence" and topic_id is not None:
+        raise HTTPException(400, "EVIDENCE_HAS_NO_TEACHING_TOPIC")
+    if topic_id is not None:
+        topic = db.get(Topic, topic_id)
+        if not topic or topic.course_id != course_id:
+            raise HTTPException(400, "TOPIC_NOT_IN_COURSE")
     # Reject disguised files before storing; full extraction runs in worker.
     if suffix == ".pdf" and not data.startswith(b"%PDF-"):
         raise HTTPException(400, "INVALID_PDF")
@@ -136,11 +152,14 @@ def upload_document(course_id: UUID = Form(), title: str = Form(min_length=1, ma
         document = db.exec(select(Document).where(Document.id == document_id).with_for_update()).first()
         if not document or document.course_id != course_id or document.purpose != purpose:
             raise HTTPException(404, "DOCUMENT_NOT_FOUND")
+        if document.material_type != material_type or document.topic_id != topic_id:
+            raise HTTPException(409, "DOCUMENT_METADATA_MISMATCH")
         latest = db.exec(select(DocumentVersion).where(DocumentVersion.document_id == document_id)
             .order_by(DocumentVersion.version.desc())).first()
         number = latest.version + 1 if latest else 1
     else:
-        document = Document(school_id=course.school_id, course_id=course_id, title=title.strip(), purpose=purpose)
+        document = Document(school_id=course.school_id, course_id=course_id,
+            title=title.strip(), purpose=purpose, material_type=material_type, topic_id=topic_id)
         db.add(document)
         db.flush()
         number = 1
@@ -168,6 +187,7 @@ def list_documents(course_id: UUID, user: User = Depends(current_user), db: Sess
     rows = db.exec(select(Document, DocumentVersion).join(DocumentVersion)
         .where(Document.course_id == course_id).order_by(DocumentVersion.created_at.desc())).all()
     return [{"document_id": d.id, "title": d.title, "purpose": d.purpose,
+        "material_type": d.material_type, "topic_id": d.topic_id,
         **v.model_dump(exclude={"storage_key"})} for d, v in rows
         if teacher or (d.purpose == "teaching" and v.status in TEACHING_READY_STATUSES)]
 
