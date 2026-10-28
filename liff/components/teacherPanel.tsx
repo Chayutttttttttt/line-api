@@ -3,9 +3,14 @@
 import { useEffect, useState } from "react";
 import { api, saveBlob } from "@/lib/api";
 
-type Version = { id: string; document_id: string; title: string; purpose: string; version: number; revision: number; status: string; filename: string; checksum: string; extraction_error: string | null };
+type MaterialType = "lesson" | "textbook" | "worksheet" | "solution" | "slides" | "reference";
+const materialNames: Record<MaterialType, string> = {
+  lesson: "ใบความรู้/บทเรียน", textbook: "หนังสือเรียน", worksheet: "ใบงาน/แบบฝึก",
+  solution: "เฉลย", slides: "สไลด์", reference: "เอกสารอ้างอิงเสริม",
+};
+type Version = { id: string; document_id: string; title: string; purpose: string; material_type: MaterialType; topic_id: string | null; version: number; revision: number; status: string; filename: string; checksum: string; extraction_error: string | null; extraction_warning: string | null };
 type Chunk = { id: string; text: string; page_no: number | null };
-type Detail = { document: { purpose: string }; version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
+type Detail = { document: { purpose: string; material_type: MaterialType; topic_id: string | null }; version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
 type Report = { readiness: string; blockers: string[] };
 type Question = { id: string; prompt: string; status: string };
 type EvaluationCase = { id: string; input: string; expected: string; failure: string; needs_customization: boolean };
@@ -15,6 +20,10 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
   const [versions, setVersions] = useState<Version[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [selectedId, setSelectedId] = useState("");
+  const [uploadDocId, setUploadDocId] = useState("");
+  const [uploadPurpose, setUploadPurpose] = useState("teaching");
+  const [uploadType, setUploadType] = useState<MaterialType>("lesson");
+  const [uploadTopic, setUploadTopic] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
   const [topics, setTopics] = useState<{ id: string; title: string }[]>([]);
   const [cases, setCases] = useState<EvaluationCase[]>([]);
@@ -57,18 +66,27 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
     {message && <p role="status" className="rounded-xl bg-brand-mint p-3 break-all">{message}</p>}
     {mode === "documents" && <>
       <p className="text-sm text-secondary">ไฟล์เอกสารสอนใช้ถาม AI ได้หลัง Worker สกัดข้อความสำเร็จ ไม่ต้องอนุมัติ ส่วนไฟล์หลักฐานจะไม่ถูกนำไปตอบ AI</p>
-      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId); if (!value(form, "document_id")) form.delete("document_id"); void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage(`รับไฟล์แล้ว · รหัสไฟล์ (version_id) ${uploaded.version_id} · รอ Worker สกัดข้อความก่อนใช้ถาม AI · งาน ${uploaded.ingestion_job_id}`); target.reset(); await refresh(); }); }}>
+      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId);
+        if (!value(form, "document_id")) form.delete("document_id");
+        if (!value(form, "topic_id")) form.delete("topic_id");
+        void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage(`รับไฟล์แล้ว · รหัสไฟล์ (version_id) ${uploaded.version_id} · รอ Worker สกัดข้อความก่อนใช้ถาม AI · งาน ${uploaded.ingestion_job_id}`); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
         <label>ชื่อเอกสาร<input name="title" required maxLength={255} className="pilot-input" /></label>
-        <label>ประเภท<select name="purpose" className="pilot-input"><option value="teaching">เอกสารสอน</option><option value="evidence">หลักฐานและเอกสารโครงการ (ไม่ใช้ตอบ AI)</option></select></label>
-        <label>เพิ่มรุ่นให้เอกสารเดิม<select name="document_id" className="pilot-input"><option value="">สร้างเอกสารใหม่</option>{versions.filter((v, i, all) => all.findIndex((x) => x.document_id === v.document_id) === i).map((v) => <option key={v.document_id} value={v.document_id}>{v.title}</option>)}</select></label>
+        <label>การใช้เอกสาร<select name="purpose" className="pilot-input" value={uploadPurpose} onChange={(e) => { setUploadPurpose(e.target.value); if (e.target.value === "evidence") setUploadTopic(""); }}><option value="teaching">เอกสารสอน (ใช้ตอบ AI)</option><option value="evidence">หลักฐานและเอกสารโครงการ (ไม่ใช้ตอบ AI)</option></select></label>
+        {uploadPurpose === "teaching" && <>
+          <label>รูปแบบสื่อ<select name="material_type" className="pilot-input" value={uploadType} onChange={(e) => setUploadType(e.target.value as MaterialType)}>{Object.entries(materialNames).map(([id, title]) => <option key={id} value={id}>{title}</option>)}</select></label>
+          <label>หัวข้อในรายวิชา (ไม่บังคับ)<select name="topic_id" className="pilot-input" value={uploadTopic} onChange={(e) => setUploadTopic(e.target.value)}><option value="">ไม่ระบุหัวข้อ</option>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.title}</option>)}</select></label>
+        </>}
+        {uploadPurpose === "evidence" && <input type="hidden" name="material_type" value="lesson" />}
+        <label>เพิ่มรุ่นให้เอกสารเดิม<select name="document_id" className="pilot-input" value={uploadDocId} onChange={(e) => { const id = e.target.value; const existing = versions.find((v) => v.document_id === id); setUploadDocId(id); if (existing) { setUploadPurpose(existing.purpose); setUploadType(existing.material_type); setUploadTopic(existing.topic_id ?? ""); } }}><option value="">สร้างเอกสารใหม่</option>{versions.filter((v, i, all) => all.findIndex((x) => x.document_id === v.document_id) === i).map((v) => <option key={v.document_id} value={v.document_id}>{v.title}</option>)}</select></label>
         <label>ไฟล์ PDF, DOCX หรือ TXT ไม่เกิน 10 MB<input type="file" name="file" required accept=".pdf,.docx,.txt" className="pilot-input" /></label>
         <button disabled={busy} className="pilot-button">อัปโหลดไฟล์ให้ AI อ่าน</button>
       </form>
       <div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
       {detail && <article className="space-y-4">
-        <p className="break-all text-sm text-secondary">{detail.version.filename} · {detail.version.status}<br />รหัสไฟล์ (version_id): {detail.version.id}<br />SHA256 {detail.version.checksum}</p>
+        <p className="break-all text-sm text-secondary">{detail.version.filename} · {detail.version.status} · {materialNames[detail.document.material_type] ?? detail.document.material_type}<br />รหัสไฟล์ (version_id): {detail.version.id}<br />SHA256 {detail.version.checksum}</p>
         <p className="text-sm">{detail.document.purpose === "teaching" && ["review", "published"].includes(detail.version.status) ? "พร้อมใช้ถาม AI แล้ว" : "ไฟล์นี้ยังไม่พร้อมใช้ตอบ AI"}</p>
         {detail.version.extraction_error && <p role="alert">สกัดข้อความไม่สำเร็จ: {detail.version.extraction_error} โปรดใช้ PDF ที่มีข้อความหรืออัปโหลดรุ่นใหม่</p>}
+        {detail.version.extraction_warning && <p role="alert" className="rounded-xl border border-border p-3 text-sm">บางหน้าไม่มีข้อความที่สกัดได้: {detail.version.extraction_warning} · หากเป็นภาพสแกนต้องใช้ OCR หรือตรวจไฟล์ต้นฉบับ</p>}
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
         {detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
           <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
