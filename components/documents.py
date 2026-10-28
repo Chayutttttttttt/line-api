@@ -1,5 +1,6 @@
 """Course-scoped document ingestion, direct source-ID retrieval and private downloads."""
 import hashlib
+import logging
 import io
 import re
 import unicodedata
@@ -16,13 +17,15 @@ from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from components.chunking import chunk_page
+from components.embeddings import embed_query
 from components.login import course_access, current_user
 from components.storage import put_file, read_file
-from config import MAX_UPLOAD_BYTES
+from config import EMBEDDINGS_ENABLED, EMBEDDING_MODEL, MAX_UPLOAD_BYTES
 from db.database import get_session
 from db.models import (AuditEvent, Chunk, ContentReview, Document, DocumentVersion, Job, Topic, User, utc_now)
 
 router = APIRouter(tags=["documents"])
+log = logging.getLogger(__name__)
 # Legacy teaching files in "review" are immediately usable; new ones become published
 # after successful extraction. Evidence files remain private and are never AI sources.
 TEACHING_READY_STATUSES = ("review", "published")
@@ -320,6 +323,25 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str,
     if source_version_id is not None:
         statement = statement.where(DocumentVersion.id == source_version_id)
     rows = db.exec(statement).all()
+    semantic_scores = {}
+    if EMBEDDINGS_ENABLED and rows:
+        try:
+            vector = embed_query(query)
+            if vector is not None:
+                distance = Chunk.embedding.cosine_distance(vector)
+                similar = (select(Chunk.id, distance)
+                    .join(DocumentVersion, Chunk.version_id == DocumentVersion.id)
+                    .join(Document, DocumentVersion.document_id == Document.id)
+                    .where(Document.course_id == course_id, Document.purpose == "teaching",
+                        DocumentVersion.status.in_(TEACHING_READY_STATUSES),
+                        Chunk.embedding_model == EMBEDDING_MODEL, Chunk.embedding.is_not(None)))
+                if source_version_id is not None:
+                    similar = similar.where(DocumentVersion.id == source_version_id)
+                for chunk_id, value in db.exec(similar.order_by(distance).limit(30)).all():
+                    semantic_scores[chunk_id] = 5.0 * max(0.0, 1.0 - float(value))
+        except Exception as error:
+            # Optional vector retrieval must never block safe lexical search.
+            log.warning("vector retrieval unavailable (%s)", type(error).__name__)
     def normalize(value):
         return unicodedata.normalize("NFC", value).casefold()
 
@@ -341,6 +363,7 @@ def search_materials(db: Session, user: User, course_id: UUID, query: str,
         shared = sum(g in text for g in grams)
         gram_score = shared / max(len(grams), 1) if shared >= 3 else 0
         score = direct * 3 + topic_match * 4 + (gram_score if gram_score >= .2 else 0)
+        score += semantic_scores.get(chunk.id, 0)
         scored.append((score, chunk, version, document))
     # For a selected PDF, permit general prompts (e.g. "สรุปไฟล์นี้")
     # to fall back to its first pages if no exact keyword matches were found.
