@@ -46,8 +46,8 @@ class GeminiPdfReaderTests(unittest.TestCase):
                 {"topic": "กฎข้อที่ 2 ของนิวตัน", "text": "a = F/m", "keywords": ["ความเร่ง"]}],
                 "warnings": []}, ensure_ascii=False)),
         ]
-        with patch("components.pdf_ai.LLM_API_KEY", "test-only"), \\
-             patch("components.pdf_ai.PDF_AI_MAX_PAGES", 10), \\
+        with patch("components.pdf_ai.LLM_API_KEY", "test-only"), \
+             patch("components.pdf_ai.PDF_AI_MAX_PAGES", 10), \
              patch("components.pdf_ai.genai.Client", return_value=client):
             result = read_pdf_with_gemini(self.pdf(2))
         self.assertEqual(len(result), 2)
