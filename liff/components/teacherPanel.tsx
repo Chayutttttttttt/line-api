@@ -88,6 +88,11 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         {detail.version.extraction_error && <p role="alert">สกัดข้อความไม่สำเร็จ: {detail.version.extraction_error} โปรดใช้ PDF ที่มีข้อความหรืออัปโหลดรุ่นใหม่</p>}
         {detail.version.extraction_warning && <p role="alert" className="rounded-xl border border-border p-3 text-sm">บางหน้าไม่มีข้อความที่สกัดได้: {detail.version.extraction_warning} · หากเป็นภาพสแกนต้องใช้ OCR หรือตรวจไฟล์ต้นฉบับ</p>}
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
+        {detail.document.purpose === "teaching" && ["review", "published"].includes(detail.version.status) && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => {
+          const result = await api<{queued_batches: number}>(`/documents/versions/${selectedId}/index`, {method: "POST"});
+          setMessage(`ส่งสร้าง Vector แล้ว ${result.queued_batches} ชุด (ถ้าไม่เปิด EMBEDDINGS_ENABLED ระบบจะแจ้งเตือน)`);
+        })}>สร้าง/อัปเดต Vector ของไฟล์นี้</button>}
+
         {detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
           <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
           <label>ข้อความที่สกัด<textarea name="text" required maxLength={10000} rows={7} defaultValue={chunk.text} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
