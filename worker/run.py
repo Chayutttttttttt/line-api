@@ -11,6 +11,8 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import requests
+from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import and_, exists, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import aliased
@@ -18,11 +20,12 @@ from sqlmodel import Session, select
 
 from agent.gemini import PROMPT_VERSION, generate_answer
 from components.documents import TEACHING_READY_STATUSES, ingest, search_materials
+from components.embeddings import embed_document_batch
 from components.login import course_access
-from config import (CHANNEL_ACCESS_TOKEN, JOB_TIMEOUT_SECONDS, LINE_PROVIDER_ID,
+from config import (CHANNEL_ACCESS_TOKEN, EMBEDDING_MODEL, EMBEDDINGS_ENABLED, JOB_TIMEOUT_SECONDS, LINE_PROVIDER_ID,
     MAX_DAILY_AI_REQUESTS, MAX_JOB_ATTEMPTS)
 from db.database import engine
-from db.models import (AuditEvent, Chunk, Conversation, CourseMembership, DocumentVersion, Job, LearningPlan,
+from db.models import (AuditEvent, Chunk, Conversation, CourseMembership, Document, DocumentVersion, Job, LearningPlan,
     LineIdentity, Message, MessageOutbox, PlanItem, Reminder, Task, Topic, User, UserProfile, WebhookEvent, utc_now)
 
 log = logging.getLogger(__name__)
@@ -70,8 +73,50 @@ def process_job(claim):
                 job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
                 if job.state != "running" or job.attempts != attempt:
                     return
-                ingest(db, UUID(job.payload["version_id"]))
+                version_id = UUID(job.payload["version_id"])
+                ingest(db, version_id)
+                version = db.get(DocumentVersion, version_id)
+                document = db.get(Document, version.document_id) if version else None
+                if (EMBEDDINGS_ENABLED and version
+                        and version.status == "published"
+                        and document and document.purpose == "teaching"):
+                    chunk_ids = db.exec(select(Chunk.id).where(
+                        Chunk.version_id == version_id).order_by(Chunk.ordinal)).all()
+                    # Short independent batches avoid one slow embedding request
+                    # blocking the entire worker queue for minutes.
+                    for offset in range(0, len(chunk_ids), 8):
+                        db.add(Job(kind="embed", user_id=None,
+                            payload={"version_id": str(version_id),
+                                     "start": offset, "limit": 8}))
                 job.state = "done"
+                db.add(job)
+                db.commit()
+            return
+        if claim["kind"] == "embed":
+            version_id = UUID(claim["payload"]["version_id"])
+            start, limit = int(claim["payload"]["start"]), int(claim["payload"]["limit"])
+            with Session(engine, expire_on_commit=False) as db:
+                version = db.get(DocumentVersion, version_id)
+                if not version or version.status not in TEACHING_READY_STATUSES:
+                    parts = []
+                else:
+                    parts = [(c.id, c.text) for c in db.exec(
+                        select(Chunk).where(Chunk.version_id == version_id,
+                            Chunk.ordinal >= start, Chunk.ordinal < start + limit)
+                        .order_by(Chunk.ordinal)).all()]
+            vectors = embed_document_batch([text for _, text in parts]) if parts else []
+            with Session(engine, expire_on_commit=False) as db:
+                job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
+                if job.state != "running" or job.attempts != attempt:
+                    return
+                version = db.get(DocumentVersion, version_id)
+                if version and version.status in TEACHING_READY_STATUSES:
+                    for (chunk_id, original_text), vector in zip(parts, vectors):
+                        chunk = db.get(Chunk, chunk_id)
+                        if chunk and chunk.text == original_text:
+                            chunk.embedding, chunk.embedding_model = vector, EMBEDDING_MODEL
+                            db.add(chunk)
+                job.state, job.updated_at = "done", utc_now()
                 db.add(job)
                 db.commit()
             return
@@ -163,14 +208,29 @@ def process_job(claim):
                 db.add(event)
             db.commit()
     except Exception as error:
-        # Never log input, tokens or provider responses. Keep a diagnosable error class.
-        log.warning("job %s failed (%s)", job_id, type(error).__name__)
+        # Fail fast for deterministic validation/input errors; transient providers
+        # still use bounded retry. Never log user prompts, raw response or tokens.
+        permanent = isinstance(error, (ValueError, ValidationError, HTTPException))
+        safe_codes = {"INVALID_CITATION", "COURSE_CHANGED_DURING_GENERATION",
+            "SOURCE_WITHDRAWN_DURING_GENERATION", "EMBEDDING_DIMENSION_MISMATCH",
+            "INVALID_EMBEDDING", "EMBEDDING_COUNT_MISMATCH",
+            "NO_SEARCHABLE_TEXT", "EMPTY_OR_TOO_LARGE_TEXT_USE_TEXT_PDF",
+            "INVALID_PDF", "ENCRYPTED_OR_TOO_MANY_PAGES", "UNSUPPORTED_FILE"}
+        code = str(error) if isinstance(error, ValueError) and str(error) in safe_codes else (
+            "MODEL_SCHEMA_INVALID" if isinstance(error, ValidationError)
+            else "INVALID_REQUEST" if isinstance(error, HTTPException)
+            else "UNEXPECTED_" + type(error).__name__)
+        log.warning("job %s failed (kind=%s, code=%s, attempt=%s)",
+            job_id, claim["kind"], code, attempt)
         with Session(engine, expire_on_commit=False) as db:
             job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
             if job.state != "running" or job.attempts != attempt:
                 return
-            job.state = "failed" if attempt >= MAX_JOB_ATTEMPTS else "retry"
-            job.next_run_at = utc_now() + timedelta(seconds=min(300, 2 ** attempt * 5))
+            job.state = "failed" if permanent or attempt >= MAX_JOB_ATTEMPTS else "retry"
+            job.next_run_at = (None if job.state == "failed"
+                else utc_now() + timedelta(seconds=min(300, 2 ** attempt * 5)))
+            job.payload = {**job.payload, "error_code": code}
+            job.updated_at = utc_now()
             db.add(job)
             if job.kind == "ingest" and job.state == "failed":
                 version = db.get(DocumentVersion, UUID(job.payload["version_id"]))
