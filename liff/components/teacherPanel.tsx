@@ -9,7 +9,7 @@ const materialNames: Record<MaterialType, string> = {
   solution: "เฉลย", slides: "สไลด์", reference: "เอกสารอ้างอิงเสริม",
 };
 type Version = { id: string; document_id: string; title: string; purpose: string; material_type: MaterialType; topic_id: string | null; version: number; revision: number; status: string; filename: string; checksum: string; extraction_error: string | null; extraction_warning: string | null };
-type Chunk = { id: string; text: string; page_no: number | null };
+type Chunk = { id: string; text: string; page_no: number | null; keywords: string[] };
 type Detail = { document: { purpose: string; material_type: MaterialType; topic_id: string | null }; version: Version; chunks: Chunk[]; reviews: { id: string; reviewer_id: string; decision: string; scope: string; notes: string; rubric: Record<string, number>; created_at: string }[] };
 type Report = { readiness: string; blockers: string[] };
 type Question = { id: string; prompt: string; status: string };
@@ -28,6 +28,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
   const [acceptanceTab, setAcceptanceTab] = useState<"evidence" | "cases" | "scoring" | "report">("evidence");
   const [questions, setQuestions] = useState<Question[]>([]);
   const [topics, setTopics] = useState<{ id: string; title: string }[]>([]);
+  const [checks, setChecks] = useState<Record<string, string>>({});
   const [cases, setCases] = useState<EvaluationCase[]>([]);
   const [courseRevision, setCourseRevision] = useState(1);
   const [editingCase, setEditingCase] = useState("");
@@ -40,8 +41,8 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
     let active = true;
     Promise.all([api<Version[]>(`/documents?course_id=${courseId}`),
       api<Question[]>(`/questions?course_id=${courseId}`), api<{id: string; title: string}[]>(`/topics?course_id=${courseId}`),
-      api<{cases: EvaluationCase[]; course_revision: number}>(`/evaluation/cases?course_id=${courseId}`)])
-      .then(([v, q, t, e]) => { if (active) { setVersions(v); setQuestions(q); setTopics(t); setCases(e.cases); setCourseRevision(e.course_revision); } })
+      api<{cases: EvaluationCase[]; course_revision: number}>(`/evaluation/cases?course_id=${courseId}`), api<Record<string, string>>("/documents/checklist")])
+      .then(([v, q, t, e, checklist]) => { if (active) { setVersions(v); setQuestions(q); setTopics(t); setCases(e.cases); setCourseRevision(e.course_revision); setChecks(checklist); } })
       .catch((e: Error) => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [courseId]);
@@ -79,11 +80,11 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
     {error && <p role="alert" className="rounded-xl border border-danger p-3 text-red-800">{error}</p>}
     {message && <p role="status" className="rounded-xl bg-brand-mint p-3 break-all">{message}</p>}
     {mode === "documents" && <>
-      <p className="text-sm text-secondary">เพิ่มสื่อการสอนให้ผู้เรียนใช้ในรายวิชานี้ ไฟล์สอนพร้อมใช้กับ AI ใน LINE หลังอ่านไฟล์สำเร็จ ส่วนไฟล์หลักฐานจะไม่ถูกนำไปตอบ AI</p>
+      <p className="text-sm text-secondary">AI จะอ่าน PDF แล้วให้ครูตรวจข้อความ เลขหน้า และคำสำคัญก่อนอนุมัติ ไฟล์ที่ยังไม่ผ่านการตรวจจะไม่ถูกนำไปตอบใน LINE</p>
       {documentTab === "upload" && <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId);
         if (!value(form, "document_id")) form.delete("document_id");
         if (!value(form, "topic_id")) form.delete("topic_id");
-        void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage("รับไฟล์แล้ว กด ‘ดูและแก้ไฟล์’ เพื่อตรวจว่าอ่านข้อความสำเร็จหรือไม่"); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
+        void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage("รับไฟล์แล้ว AI กำลังอ่านเอกสาร โปรดเปิด ‘ดูและแก้ไฟล์’ เพื่อตรวจและอนุมัติเมื่ออ่านเสร็จ"); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
         <label>ชื่อเอกสาร<input name="title" required maxLength={255} className="pilot-input" /></label>
         <label>การใช้เอกสาร<select name="purpose" className="pilot-input" value={uploadPurpose} onChange={(e) => { setUploadPurpose(e.target.value); if (e.target.value === "evidence") setUploadTopic(""); }}><option value="teaching">เอกสารสอน (ใช้ตอบ AI)</option><option value="evidence">หลักฐานและเอกสารโครงการ (ไม่ใช้ตอบ AI)</option></select></label>
         {uploadPurpose === "teaching" && <>
@@ -95,27 +96,59 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         <label>ไฟล์ PDF, DOCX หรือ TXT ไม่เกิน 10 MB<input type="file" name="file" required accept=".pdf,.docx,.txt" className="pilot-input" /></label>
         <button disabled={busy} className="pilot-button">เพิ่มไฟล์สอนในรายวิชา</button>
       </form>}
-      {documentTab === "library" && <><div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
+      {documentTab === "library" && <><div className="flex flex-wrap gap-2"><select aria-label="รุ่นเอกสารที่ต้องตรวจ" className="pilot-input flex-1" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setDetail(null); }}><option value="">เลือกรุ่นเอกสาร</option>{versions.map((v) => <option key={v.id} value={v.id}>{v.title} · รุ่น {v.version} · {v.status === "review" ? "รอครูตรวจ" : v.status === "published" ? "อนุมัติแล้ว" : v.status === "failed" ? "อ่านไม่สำเร็จ" : "กำลังดำเนินการ"}</option>)}</select><button disabled={busy} className="pilot-secondary" onClick={() => void run(refresh)}>รีเฟรชสถานะ</button></div>
       {detail && <article className="space-y-4">
-        <p className="text-sm font-medium">{detail.version.filename} · {detail.version.status} · {materialNames[detail.document.material_type] ?? detail.document.material_type}</p>
+        <p className="text-sm font-medium">{detail.version.filename} · {detail.version.status === "review" ? "รอครูตรวจ" : detail.version.status === "published" ? "อนุมัติแล้ว" : detail.version.status} · {materialNames[detail.document.material_type] ?? detail.document.material_type}</p>
         <details className="rounded-xl bg-surface-soft p-3"><summary className="cursor-pointer text-sm">รายละเอียดไฟล์สำหรับตรวจสอบ</summary>
           <p className="mt-2 break-all text-xs">รหัสไฟล์: {detail.version.id}<br />SHA256: {detail.version.checksum}</p>
         </details>
-        <p className="text-sm">{detail.document.purpose === "teaching" && ["review", "published"].includes(detail.version.status) ? "พร้อมใช้ถาม AI แล้ว" : "ไฟล์นี้ยังไม่พร้อมใช้ตอบ AI"}</p>
+        <p className="text-sm">{detail.document.purpose === "teaching" && detail.version.status === "published" ? "ครูอนุมัติแล้ว: AI ใน LINE ใช้เอกสารนี้ได้" : detail.version.status === "review" ? "รอตรวจ: AI และนักเรียนยังใช้เอกสารนี้ไม่ได้" : "ไฟล์นี้ยังไม่พร้อมใช้กับ AI"}</p>
         {detail.version.extraction_error && <p role="alert">สกัดข้อความไม่สำเร็จ: {detail.version.extraction_error} โปรดใช้ PDF ที่มีข้อความหรืออัปโหลดรุ่นใหม่</p>}
-        {detail.version.extraction_warning && <p role="alert" className="rounded-xl border border-border p-3 text-sm">บางหน้าไม่มีข้อความที่สกัดได้: {detail.version.extraction_warning} · หากเป็นภาพสแกนต้องใช้ OCR หรือตรวจไฟล์ต้นฉบับ</p>}
+        {detail.version.extraction_warning && <p role="alert" className="rounded-xl border border-border p-3 text-sm">AI พบส่วนที่อ่านไม่ชัด กรุณาตรวจเทียบกับ PDF: {detail.version.extraction_warning}</p>}
         <button className="pilot-secondary" disabled={busy} onClick={() => void run(async () => saveBlob(await api<Blob>(`/documents/versions/${selectedId}/file`), detail.version.filename))}>ดาวน์โหลดต้นฉบับเพื่อตรวจเทียบ</button>
-        {detail.document.purpose === "teaching" && ["review", "published"].includes(detail.version.status) && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => {
+        {detail.document.purpose === "teaching" && detail.version.status === "published" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => {
           const result = await api<{queued_batches: number}>(`/documents/versions/${selectedId}/index`, {method: "POST"});
           setMessage(`ส่งสร้างดัชนีค้นหาแล้ว ${result.queued_batches} ชุด`);
         })}>สร้าง/อัปเดต Vector ของไฟล์นี้</button>}
 
         <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-semibold">ตรวจหรือแก้ข้อความที่อ่านจากไฟล์ ({detail.chunks.length} ส่วน)</summary>
-          <div className="mt-3 space-y-3">{detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
-          <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
-          <label>ข้อความที่สกัด<textarea name="text" required maxLength={10000} rows={7} defaultValue={chunk.text} className="pilot-input" disabled={!["review", "published"].includes(detail.version.status)} /></label>
-          {["review", "published"].includes(detail.version.status) && <button className="pilot-secondary" disabled={busy}>บันทึกข้อความและเลขหน้า</button>}
+          <div className="mt-3 space-y-3">{detail.chunks.map((chunk) => <form key={`${chunk.id}-${detail.version.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api(`/documents/versions/${selectedId}/chunks/${chunk.id}`, { method: "PATCH", body: JSON.stringify({ text: value(form, "text"), page_no: Number(value(form, "page")), keywords: value(form, "keywords").split(",").map((k) => k.trim()).filter(Boolean).slice(0, 12), expected_revision: detail.version.revision }) }); await refresh(); }); }}>
+          <label>หน้าเอกสารที่ตรวจยืนยันแล้ว<input name="page" type="number" min={1} max={1000} required defaultValue={chunk.page_no ?? ""} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
+          <label>ข้อความที่สกัด<textarea name="text" required maxLength={10000} rows={7} defaultValue={chunk.text} className="pilot-input" disabled={detail.version.status !== "review"} /></label>
+          <label>คำสำคัญจาก AI (คั่นด้วยจุลภาค)<input name="keywords" className="pilot-input" defaultValue={(chunk.keywords ?? []).join(", ")} disabled={detail.version.status !== "review"} /></label>
+          {detail.version.status === "review" && <button className="pilot-secondary" disabled={busy}>บันทึกข้อความและคำสำคัญ</button>}
         </form>)}</div></details>
+        {detail.document.purpose === "teaching" && detail.version.status === "review" && <section className="space-y-4 rounded-2xl border-2 border-brand-blue p-4">
+          <h3 className="text-lg font-semibold text-brand-navy">ตรวจเอกสารก่อนให้ AI ใช้</h3>
+          <p className="text-sm text-secondary">เทียบไฟล์ต้นฉบับกับข้อความและคำสำคัญที่ AI อ่านได้ หากผิดให้แก้ข้อความด้านบนก่อนติ๊กตรวจผ่าน</p>
+          <form key={detail.version.id + "-" + detail.version.revision} className="space-y-4"
+            onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget);
+              void run(async () => {
+                const checklist = Object.fromEntries(Object.keys(checks).map((id) => [id, form.has("check-" + id)]));
+                const rubric = Object.fromEntries(["correctness","citations","teaching","scope"].map((id) => [id, form.has("rating-" + id) ? 2 : 0]));
+                if (!Object.keys(checks).length || !Object.values(checklist).every(Boolean) || !Object.values(rubric).every((n) => n === 2))
+                  throw new Error("กรุณาตรวจและยืนยันให้ครบทุกข้อ");
+                await api(`/documents/${detail.version.document_id}/publish`, {method:"POST", body:JSON.stringify({
+                  version:detail.version.version, expected_revision:detail.version.revision,
+                  scope:"pilot", decision:"approve", checklist,rubric,notes:value(form,"notes")
+                })});
+                await refresh(); setMessage("อนุมัติแล้ว เอกสารนี้พร้อมใช้กับ AI ใน LINE");
+              }); }}>
+            <div className="space-y-2">
+              {Object.entries(checks).map(([id,title]) => <label key={id} className="flex items-start gap-3 rounded-xl bg-surface-soft p-3 text-sm">
+                <input type="checkbox" required name={"check-" + id} className="mt-1 h-5 w-5 shrink-0" /><span>{title}</span>
+              </label>)}
+            </div>
+            <fieldset className="rounded-xl border border-border p-3 space-y-2"><legend className="font-semibold">ยืนยันคุณภาพเอกสาร</legend>
+              {([["correctness","เนื้อหาถูกต้อง"],["citations","ไฟล์และเลขหน้าตรง"],["teaching","ใช้สอนได้จริง"],["scope","ตรงตามรายวิชา"]] as const).map(([id,label]) =>
+                <label key={id} className="flex items-center gap-3 py-2 text-sm"><input type="checkbox" required name={"rating-" + id} className="h-5 w-5" />{label}</label>)}
+            </fieldset>
+            <label className="block">หมายเหตุผลตรวจ (ต้องกรอกหาก AI แจ้งจุดอ่านไม่ชัด)
+              <textarea name="notes" maxLength={5000} required={!!detail.version.extraction_warning} className="pilot-input mt-1" placeholder="ตรวจเทียบต้นฉบับแล้ว" />
+            </label>
+            <button className="pilot-button w-full" disabled={busy || !Object.keys(checks).length}>ตรวจครบแล้ว อนุมัติใช้กับ AI</button>
+          </form>
+        </section>}
         {["review", "published"].includes(detail.version.status) && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/documents/versions/${selectedId}/withdraw`, { method: "POST", body: JSON.stringify({ expected_revision: detail.version.revision }) }); await refresh(); setMessage("ถอนการใช้รุ่นนี้แล้ว"); })}>ถอนการใช้เอกสารรุ่นนี้</button>}
         <h3 className="font-semibold">ประวัติผลตรวจ</h3>{detail.reviews.map((r) => <p key={r.id} className="rounded-xl bg-surface-soft p-3 text-sm break-all">{r.decision} · {r.scope} · {new Date(r.created_at).toLocaleString("th-TH")}<br />ผู้ตรวจ {r.reviewer_id}<br />{r.notes}<br />คะแนน 0–2: {Object.entries(r.rubric).map(([key, score]) => `${key} ${score}`).join(" · ")}</p>)}
       </article>}</>}
