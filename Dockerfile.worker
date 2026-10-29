@@ -8,12 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Catch Python import/syntax regressions and test the PDF reader without API calls.
-RUN python -m compileall -q agent components db worker tests
-RUN python -m unittest discover -s tests -p 'test_pdf_ai_ingest.py' -v \
- && python -m unittest discover -s tests -p 'test_semantic_chunking.py' -v \
- && python -m unittest discover -s tests -p 'test_material_pipeline.py' -v \
- && python -m unittest discover -s tests -p 'test_document_deletion.py' -v
+# Check Python syntax during the image build.
+RUN python -m compileall -q agent components db worker
 
 # Background worker; must not start the FastAPI HTTP server.
 CMD ["python", "-m", "worker.run"]

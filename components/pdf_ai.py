@@ -5,6 +5,7 @@ The model transcribes topic-labeled sections in one pass; humans must review
 the source before any document enters learner retrieval.
 """
 from io import BytesIO
+import hashlib
 import base64
 import json
 
@@ -22,10 +23,20 @@ class PdfSection(BaseModel):
         description="Search phrases found in this section, not invented facts.")
 
 
+PDF_BATCH_SIZE = 2
+PDF_PROMPT_VERSION = "semantic-pdf-batch-v1"
+
+
 class PdfPageRead(BaseModel):
+    page_no: int = Field(ge=1, description="Original document page number supplied in page_numbers.")
     sections: list[PdfSection] = Field(description="Ordered, non-overlapping semantic sections covering all readable text.")
     warnings: list[str] = Field(default_factory=list, max_length=5,
         description="Short descriptions of unclear or illegible areas; no invented content.")
+
+
+
+class PdfBatchRead(BaseModel):
+    pages: list[PdfPageRead]
 
 
 def _keywords(values: list[str]) -> list[str]:
@@ -40,7 +51,7 @@ def _keywords(values: list[str]) -> list[str]:
     return output[:12]
 
 
-def read_pdf_with_openai(data: bytes, on_page=None) -> list[tuple]:
+def read_pdf_with_openai(data: bytes, on_page=None, *, checkpoint=None, on_checkpoint=None) -> list[tuple]:
     """Never publish on missing text, failed pages, or an inaccessible AI reader."""
     if not data.startswith(b"%PDF-"):
         raise ValueError("INVALID_PDF")
@@ -56,19 +67,39 @@ def read_pdf_with_openai(data: bytes, on_page=None) -> list[tuple]:
         raise
     except Exception as error:
         raise ValueError("INVALID_PDF") from error
-    pages = []
-    # Renew the worker lease per page; SDK retries must not outlive that lease.
+    identity = {"checksum": hashlib.sha256(data).hexdigest(), "model": PDF_READER_MODEL,
+        "prompt_version": PDF_PROMPT_VERSION, "total_pages": len(reader.pages),
+        "batch_size": PDF_BATCH_SIZE, "max_output_tokens": PDF_MAX_OUTPUT_TOKENS}
+    saved = []
+    if checkpoint is not None:
+        if not isinstance(checkpoint, dict):
+            raise ValueError("PDF_CHECKPOINT_INVALID")
+        if checkpoint.get("identity") != identity:
+            raise ValueError("PDF_CHECKPOINT_MISMATCH")
+        try:
+            saved = [PdfPageRead.model_validate(page) for page in checkpoint["pages"]]
+        except (KeyError, TypeError, ValidationError) as error:
+            raise ValueError("PDF_CHECKPOINT_INVALID") from error
+        if ([page.page_no for page in saved] != list(range(1, len(saved) + 1))
+                or len(saved) > len(reader.pages)
+                or (len(saved) != len(reader.pages) and len(saved) % PDF_BATCH_SIZE)):
+            raise ValueError("PDF_CHECKPOINT_INVALID")
+    pages = [_page_result(page) for page in saved]
+    # Renew the worker lease per batch; SDK retries must not outlive that lease.
     with OpenAI(api_key=LLM_API_KEY, timeout=60.0, max_retries=0) as client:
-        for index, page in enumerate(reader.pages):
+        for index in range(len(saved), len(reader.pages), PDF_BATCH_SIZE):
+            numbers = list(range(index + 1, min(index + PDF_BATCH_SIZE, len(reader.pages)) + 1))
             if on_page:
                 on_page(index + 1, len(reader.pages))
             writer = PdfWriter()
-            writer.add_page(page)
+            for number in numbers:
+                writer.add_page(reader.pages[number - 1])
             binary = BytesIO()
             writer.write(binary)
             previous_topic = (pages[-1][4][-1]["topic"]
                 if pages and pages[-1][4] else "")
-            instructions = ("ถอดข้อความหน้า PDF อย่างครบถ้วนตามลำดับ รวมข้อความไทย สูตร หน่วย ตาราง "
+            instructions = ("อ่านทุกหน้าที่แนบและคืน pages ตาม page_numbers ให้ครบตามลำดับ รวมหน้าว่างด้วย ห้ามรวมข้อความข้ามหน้า "
+                     "ถอดข้อความหน้า PDF อย่างครบถ้วนตามลำดับ รวมข้อความไทย สูตร หน่วย ตาราง "
                      "หัวข้อ คำบรรยายภาพ และข้อความที่อ่านได้จากรูปภาพ ห้ามสรุป ห้ามละหรือแต่งเนื้อหา "
                      "แบ่งออกเป็น sections ตามหัวข้อย่อยและความหมายจริง โดยแต่ละ section มี topic "
                      "ที่เฉพาะเจาะจง text เป็นข้อความต้นฉบับของส่วนนั้นแบบไม่ซ้ำกับ section อื่น "
@@ -82,10 +113,10 @@ def read_pdf_with_openai(data: bytes, on_page=None) -> list[tuple]:
                 response = client.responses.parse(model=PDF_READER_MODEL,
                     instructions=instructions,
                     input=[{"role": "user", "content": [{"type": "input_file",
-                        "filename": f"page-{index + 1}.pdf",
+                        "filename": f"pages-{numbers[0]}-{numbers[-1]}.pdf",
                         "file_data": "data:application/pdf;base64," + base64.b64encode(binary.getvalue()).decode("ascii")},
-                        {"type": "input_text", "text": json.dumps({"previous_topic": previous_topic[:120]}, ensure_ascii=False)}]}],
-                    text_format=PdfPageRead, max_output_tokens=PDF_MAX_OUTPUT_TOKENS, store=False)
+                        {"type": "input_text", "text": json.dumps({"previous_topic": previous_topic[:120], "page_numbers": numbers}, ensure_ascii=False)}]}],
+                    text_format=PdfBatchRead, max_output_tokens=PDF_MAX_OUTPUT_TOKENS, store=False)
             except (ValidationError, json.JSONDecodeError) as error:
                 raise ValueError("PDF_AI_RESPONSE_INVALID") from error
             if response.status != "completed":
@@ -96,23 +127,34 @@ def read_pdf_with_openai(data: bytes, on_page=None) -> list[tuple]:
             parsed = response.output_parsed
             if parsed is None:
                 raise ValueError("PDF_AI_RESPONSE_INVALID")
-            if len(parsed.sections) > 40:
+            if [page.page_no for page in parsed.pages] != numbers:
                 raise ValueError("PDF_AI_RESPONSE_INVALID")
-            sections = [
-                {"topic": " ".join(section.topic.strip().split())[:255],
-                 "text": section.text.strip(), "keywords": _keywords(section.keywords)}
-                for section in parsed.sections if section.text.strip()
-            ]
-            if any(not section["topic"] for section in sections):
-                raise ValueError("PDF_AI_RESPONSE_INVALID")
-            text = "\n\n".join(section["text"] for section in sections)
-            if len(text) > 24000:
-                raise ValueError("PDF_PAGE_TOO_LONG")
-            terms = _keywords([word for section in sections for word in section["keywords"]])
-            note = "; ".join(w[:160] for w in parsed.warnings if w.strip())[:500] or None
-            pages.append((index + 1, text, terms, note, sections))
+            batch = [_page_result(page) for page in parsed.pages]
+            if sum(len(page[1]) for page in pages + batch) > 1_000_000:
+                raise ValueError("PDF_AI_TEXT_TOO_LARGE")
+            saved.extend(parsed.pages)
+            # Persist only complete, validated batches; a failed save aborts reading.
+            if on_checkpoint:
+                on_checkpoint({"identity": identity, "pages": [page.model_dump() for page in saved]})
+            pages.extend(batch)
     if not any(text for _, text, _, _, _ in pages):
         raise ValueError("PDF_AI_NO_SEARCHABLE_TEXT")
     if sum(len(text) for _, text, _, _, _ in pages) > 1_000_000:
         raise ValueError("PDF_AI_TEXT_TOO_LARGE")
     return pages
+
+
+def _page_result(page: PdfPageRead) -> tuple:
+    if len(page.sections) > 40:
+        raise ValueError("PDF_AI_RESPONSE_INVALID")
+    sections = [{"topic": " ".join(section.topic.strip().split())[:255],
+        "text": section.text.strip(), "keywords": _keywords(section.keywords)}
+        for section in page.sections if section.text.strip()]
+    if any(not section["topic"] for section in sections):
+        raise ValueError("PDF_AI_RESPONSE_INVALID")
+    text = "\n\n".join(section["text"] for section in sections)
+    if len(text) > 24000:
+        raise ValueError("PDF_PAGE_TOO_LONG")
+    terms = _keywords([word for section in sections for word in section["keywords"]])
+    note = "; ".join(w[:160] for w in page.warnings if w.strip())[:500] or None
+    return (page.page_no, text, terms, note, sections)

@@ -9,11 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Catch Python import/syntax regressions and test the PDF reader without API calls.
-RUN python -m compileall -q agent components db worker tests
-RUN python -m unittest discover -s tests -p 'test_pdf_ai_ingest.py' -v \
- && python -m unittest discover -s tests -p 'test_semantic_chunking.py' -v \
- && python -m unittest discover -s tests -p 'test_material_pipeline.py' -v \
- && python -m unittest discover -s tests -p 'test_document_deletion.py' -v
+# Check Python syntax during the image build.
+RUN python -m compileall -q agent components db worker
 
 CMD ["sh", "-c", "python -m db.migrate && exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

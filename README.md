@@ -20,7 +20,7 @@
 
 ## เริ่มพัฒนา
 
-ใช้ Python 3.12, Node.js 22 และ PostgreSQL ที่ติดตั้ง extension `vector` ได้ เก็บ `.env` จาก `.env.example` โดยใส่ secrets เฉพาะเครื่องหรือ Railway Variables
+ใช้ Python 3.12, Node.js 22 และ PostgreSQL ที่ติดตั้ง extension `vector` ได้ สร้าง `.env` ในเครื่องเองหรือกำหนด Railway Variables โดยใส่ secrets เฉพาะในสองที่นี้ ดูตัวแปรที่ระบบอ่านใน `config.py` และหัวข้อ OpenAI GPT configuration ด้านล่าง
 
 ```bash
 python -m venv .venv
@@ -37,7 +37,7 @@ python -m venv .venv
 
 สำหรับการทดสอบไฟล์ในเครื่องใช้ `STORAGE_BACKEND=local` และไดเรกทอรีที่เขียนได้ อย่าใช้ `/tmp` เป็นที่เก็บ production
 
-LIFF ใช้ `liff/.env.example` เป็นรายการค่าที่ต้องกำหนด:
+LIFF ต้องกำหนด `NEXT_PUBLIC_LIFF_ID` และ `NEXT_PUBLIC_API_URL` ใน `liff/.env.local` หรือ Railway build variables:
 
 ```bash
 npm --prefix liff ci
@@ -58,7 +58,7 @@ npm --prefix liff run dev
 ```
 
 หน้าเว็บแสดง UUID บัญชีในส่วนตั้งค่า หลังเพิ่มสมาชิกให้ reload หน้าเว็บ
-
+ยังไม่ได้ push/deploy หรือเรียก OpenAI ด้วยคีย์จริง และยังไม่ได้ทำ full LIFF buil
 ## ตั้งรายวิชาและใช้ผ่าน LINE
 
 1. ครูที่มีสิทธิ์เดิมเปิด LIFF → **จัดการวิชา / ตรวจคำตอบ** ตั้งชื่อ วิชา ระดับชั้น ขอบเขต และภาษาที่ตอบ เพิ่มวิชาอื่นในโรงเรียนเดิมได้จากหน้านี้ บทบาทครูยังมาจากผู้ดูแล
@@ -79,7 +79,7 @@ Migration ใหม่ `20261021_multisubject` เพิ่มข้อมูล
 1. เปิดให้บริการ Railway กลับมาออนไลน์ก่อน จากหน้าที่อ่านได้เมื่อ 18 ตุลาคม 2569 โปรเจกต์แสดง Trial expired และ API/Postgres ออฟไลน์ โค้ดรอบนี้ไม่ได้เปลี่ยนแพ็กเกจหรือ deploy ขึ้น production
 2. PostgreSQL ต้องรองรับ `CREATE EXTENSION vector` หาก image เดิมไม่มี pgvector ต้องเลือก image/template ที่มี extension ก่อน ทดสอบสำรองและ restore ก่อนย้ายฐานเดิม
 3. API ใช้ root ของ repository และ Dockerfile ที่ root Startup เรียก `python -m db.migrate` ก่อน uvicorn `/health` ตรวจการเชื่อมต่อ SQL
-4. ตั้ง `DATABASE_URL` เป็น variable reference ของ Postgres และค่า LINE ตาม `.env.example` ตั้ง CORS เป็น origin ของ LIFF จริง ไม่ใส่ path
+4. ตั้ง `DATABASE_URL` เป็น variable reference ของ Postgres และค่า LINE ได้แก่ `CHANNEL_ACCESS_TOKEN`, `CHANNEL_SECRET`, `LINE_CHANNEL_ID`, `LINE_LOGIN_CHANNEL_ID`, `LINE_PROVIDER_ID` ตั้ง CORS เป็น origin ของ LIFF จริง ไม่ใส่ path
 5. Bucket `adaptable-folder`: ตั้ง `STORAGE_BACKEND=s3` และ map `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` จาก Credentials/Variable References ของ bucket ใช้ `S3_ADDRESSING_STYLE=virtual` เว้นแต่ Credentials ของ bucket เดิมระบุ path-style ห้ามเปิด bucket เป็น public
 6. เพิ่ม worker จาก repository/image เดียวกัน ใช้ start command `python -m worker.run` และ Variables ชุดเดียวกับ API **ปิด HTTP healthcheck ของ worker** หากสืบทอด `railway.toml` ใช้ Settings override ให้ worker ไม่มี healthcheck `/health` Worker รวม scheduler และ outbox sender แล้ว ไม่ต้องเพิ่ม cron ที่ส่งซ้ำ
 7. LIFF แยก service ใช้ Root Directory `liff` กับ Dockerfile ในโฟลเดอร์นั้น ใส่ `NEXT_PUBLIC_LIFF_ID` และ `NEXT_PUBLIC_API_URL` เป็น build variables ก่อน build ค่าเหล่านี้ไม่ใช่ secrets
@@ -105,12 +105,11 @@ EMBEDDING_MODEL=text-embedding-3-small
 
 - ตั้งค่าบน API และ worker ให้ตรงกัน; ไม่ใช้ `GEMINI_API_KEY` แล้ว และต้องเปลี่ยนค่าที่เคยตั้ง `PDF_READER_MODEL`/`EMBEDDING_MODEL` เป็นโมเดล Gemini ด้วย ค่า PDF_READER_MODEL ที่ว่างหรือไม่ได้ตั้งจะใช้ LLM_MODEL
 - `AI_ENABLED` เปิด/ปิดการตอบนักเรียนเท่านั้น การอัปโหลด PDF สอนจะเรียก OpenAI แม้ AI_ENABLED=false เพื่อให้ครูตรวจเอกสารก่อนเปิดแชต; evidence ไม่ส่งให้โมเดล
-- PDF ส่งเป็น base64 ของไฟล์ทีละหน้าโดยไม่สร้างไฟล์ค้างใน OpenAI Files API ใช้ `store=False`; ยังคง semantic sections, topic continuity, 2400-character chunks และ page spans จาก main ล่าสุด
-- ไม่ส่ง temperature; output limits รวม reasoning tokens ด้วย การตอบแชตใช้ timeout 30 วินาทีต่อครั้งและซ่อม schema/citation ได้ 1 ครั้ง การอ่าน PDF ใช้ 60 วินาทีต่อหน้าและต่ออายุ job lease ก่อนอ่านแต่ละหน้า; ปิด SDK retries ให้ worker จัดการข้อผิดพลาดชั่วคราว
+- PDF ส่งเป็น base64 ของไฟล์ชุดละ 2 หน้าโดยไม่สร้างไฟล์ค้างใน OpenAI Files API ใช้ `store=False`; ยังคง semantic sections, topic continuity, 2400-character chunks และ page spans จาก main ล่าสุด
+- ไม่ส่ง temperature; output limits รวม reasoning tokens ด้วย การตอบแชตใช้ timeout 30 วินาทีต่อครั้งและซ่อม schema/citation ได้ 1 ครั้ง การอ่าน PDF ใช้ 60 วินาทีต่อชุดและต่ออายุ job lease ก่อนอ่านแต่ละชุด; ปิด SDK retries ให้ worker จัดการข้อผิดพลาดชั่วคราว
 - การตอบไม่ครบหรือ refusal จะไม่ถูกแสดงเป็นคำตอบมีหลักฐาน และ PDF ที่อ่านไม่ครบ/ผิด schema จะไม่ถูกบันทึกเป็นเอกสารพร้อมอนุมัติ
 - หากเปิด embeddings ใช้ `text-embedding-3-small` พร้อม `dimensions=768` ให้ตรงคอลัมน์เดิม ไม่ต้องเปลี่ยน schema ฐานข้อมูลสำหรับการย้าย provider นี้ การค้นกรอง embedding_model ให้ตรงกับโมเดลปัจจุบันจึงไม่ผสม vector เก่าจาก Gemini; กด **สร้าง/อัปเดต Vector ของไฟล์นี้** เพื่อทำดัชนีเอกสารที่อนุมัติแล้วใหม่
 - การอัปเดตจาก checkout เก่าต้องรัน migrations ที่มากับ main ล่าสุดตามขั้นตอนปกติ และใช้ API/worker รุ่นเดียวกัน เอกสารเดิมไม่ถูกอ่านหรือแบ่ง chunks ใหม่อัตโนมัติ
-- ตรวจแบบไม่เรียก API: `.venv/bin/python -m unittest discover -s tests -v` ครอบคลุม OpenAI SDK บน HTTP จำลอง ไม่ใช่การยืนยันสิทธิ์โมเดล/เครดิตหรือคุณภาพอ่าน PDF ของบัญชีจริง
 
 อ้างอิง: [PDF inputs](https://developers.openai.com/api/docs/guides/file-inputs), [GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [Embedding dimensions](https://developers.openai.com/api/docs/guides/embeddings)
 
@@ -185,7 +184,7 @@ npm --prefix liff run build -- --webpack
 
 ## OpenAI PDF reading + teacher review (28 ตุลาคม 2569)
 
-- ครูอัปโหลด PDF สื่อการสอน (ขนาดไม่เกิน 10 MB, เริ่มต้นไม่เกิน **40 หน้า** โดยปรับ `PDF_AI_MAX_PAGES` ได้แต่ไม่เกินขีดจำกัดตรวจ 200 หน้า) จาก private bucket Worker แยกหน้าโดยใช้ pypdf เฉพาะโครงสร้างไฟล์ แล้วให้ OpenAI `PDF_READER_MODEL` อ่านแต่ละหน้าด้วย PDF vision และตอบ JSON เป็นข้อความ/Keywords/คำเตือน การอ่านนี้มีค่า OpenAI API ต่อหน้าที่ส่ง ไม่ได้จำกัดโดยจำนวนคำถามของนักเรียน
+- ครูอัปโหลด PDF สื่อการสอน (ขนาดไม่เกิน 10 MB, เริ่มต้นไม่เกิน **40 หน้า** โดยปรับ `PDF_AI_MAX_PAGES` ได้แต่ไม่เกินขีดจำกัดตรวจ 200 หน้า) จาก private bucket Worker แยกหน้าโดยใช้ pypdf เฉพาะโครงสร้างไฟล์ แล้วให้ OpenAI `PDF_READER_MODEL` อ่านชุดละ 2 หน้าด้วย PDF vision โดยคืนข้อมูลแยกตามเลขหน้าจริง และตอบ JSON เป็นข้อความ/Keywords/คำเตือน การอ่านนี้มีค่า OpenAI API ตามเนื้อหาที่ส่ง ไม่ได้จำกัดโดยจำนวนคำถามของนักเรียน
 - ไฟล์ `evidence` ไม่ส่งไป OpenAI และไม่เข้า RAG; DOCX/TXT ยังสกัดข้อความแบบเดิม
 - ระบบเก็บ Chunks พร้อม `version_id`, `page_no`, `chunk_id`, `text`, `keywords`. การค้นแบบข้อความไทย/character grams ใช้ Keywords ประกอบ; ไม่ได้เปลี่ยน Keywords ให้เป็นแหล่งอ้างอิงแทนข้อความต้นฉบับ และ Vector Embedding ยังเป็นโหมดเลือกเปิด
 - ไฟล์การสอนที่ AI อ่านเสร็จมีสถานะ `review` (ไม่ถูกใช้ตอบคำถามหรือดาวน์โหลดโดยนักเรียน) ครูต้องเปรียบเทียบ PDF ต้นฉบับกับข้อความ/เลขหน้า/Keywords แล้วแก้ไขในหน้า “ดูและแก้ไฟล์” ทำเครื่องหมาย Checklist 13 ข้อและยืนยัน rubric สี่ด้าน ก่อนอนุมัติระดับ `pilot` ให้เปลี่ยนเป็น `published`
@@ -197,7 +196,7 @@ npm --prefix liff run build -- --webpack
 
 ## Semantic Chunking ตามหัวข้อ (28 ตุลาคม 2569)
 
-- เมื่อครูอัปโหลด **PDF ใหม่** OpenAI อ่านแต่ละหน้าในรอบเดิมและส่งรายการ `sections` (หัวข้อ `topic`, ข้อความต้นฉบับ `text`, `keywords`) แทนการแบ่งตามหน้าเป็นหลัก ไม่เรียก OpenAI เพิ่มเพื่อแบ่ง Chunks
+- เมื่อครูอัปโหลด **PDF ใหม่** OpenAI อ่านชุดละ 2 หน้าในรอบเดิมและส่งรายการ `sections` (หัวข้อ `topic`, ข้อความต้นฉบับ `text`, `keywords`) แทนการแบ่งตามหน้าเป็นหลัก ไม่เรียก OpenAI เพิ่มเพื่อแบ่ง Chunks
 - Python รวม Sections ที่ต่อเนื่องกันและมี **ชื่อหัวข้อตรงกัน** แม้ต่อข้ามหน้ากระดาษ โดยมีเพดานข้อความ 2,400 ตัวอักษรต่อ Chunk สำหรับควบคุม Context; หัวข้อต่างกันจะไม่ถูกผสาน และช่วงที่เกินเพดานจะตัดตามขอบเขตย่อหน้า
 - เก็บ `chunks.topic`, `chunks.page_no` (หน้าเริ่มต้นเดิม), `chunks.page_end`, Keywords และ `chunk_id` เพื่อค้นและอ้างอิง LINE ว่า "หน้า 4–6" ได้ ข้อมูลเดิมย้ายแบบ additive ด้วย Migration `20261028_semantic_chunks`
 - LIFF หน้าครูสามารถตรวจ/แก้หัวข้อ ข้อความ Keywords หน้าเริ่มต้น และหน้าสิ้นสุดก่อนผ่าน Checklist แล้วอนุมัติเอกสาร หาก OpenAI ตีหัวข้อหรืออ่านข้อความผิด ต้องให้ครูตรวจแก้กับ PDF จริง
@@ -212,3 +211,14 @@ npm --prefix liff run build -- --webpack
 - ไฟล์ `published` ต้องถอนการใช้ก่อนลบ ส่วนไฟล์ที่กำลังมี Job `queued/retry/running` และรุ่นที่มีคำถาม/หลักฐานประเมินอ้างอิงจะถูกปฏิเสธด้วย HTTP 409 พร้อมเหตุผล; ข้อมูลอื่นในรายวิชาไม่ถูกลบตาม
 - เพื่อไม่ให้ฐานข้อมูลหลงสถานะหาก S3 ลบไม่สำเร็จ ระบบเปลี่ยนสถานะเป็น `deleting` ก่อน หาก Storage มีปัญหาจะแสดงว่าลบไม่สำเร็จและครูสามารถลองลบซ้ำได้หลังแก้ปัญหา; ไม่ลบ Bucket ทั้งก้อน
 - ข้อมูลที่เผยแพร่แล้วหรือมีแหล่งอ้างอิงในบทสนทนาเก่าอาจไม่สามารถเปิดต้นฉบับย้อนกลับได้หลังลบถาวร ควรสำรองไฟล์ก่อน และตรวจว่าหมดการใช้งานจริง
+
+
+## PDF checkpoint ทุก 2 หน้า
+
+Worker ส่งหน้า 1–2, 3–4, … ให้ OpenAI ครั้งละชุด (ชุดสุดท้ายอาจมีหน้าเดียว) ตรวจว่า JSON มีเลขหน้าครบและเรียงตรงกับชุดที่ส่ง แล้ว commit ผลใน `jobs.payload.pdf_checkpoint` หลังแต่ละชุดสำเร็จ ไม่ต้องเพิ่มตารางหรือ migration
+
+Checkpoint ผูกกับ checksum ของไฟล์, รุ่น prompt, โมเดล, จำนวนหน้า, batch size และ output limit เมื่อ retry งานเดิมหรือ worker กลับมารับงานหลัง lease หมด จะอ่านต่อจากชุดที่ยังไม่สำเร็จ โดยส่งหัวข้อสุดท้ายของชุดก่อนเป็นบริบทด้วย หากการตั้งค่าหรือไฟล์เปลี่ยนจะหยุดด้วย PDF_CHECKPOINT_MISMATCH เพื่อไม่รวมผลต่างรุ่น
+
+เมื่ออ่านครบจึงสร้าง semantic chunks จากทุกหน้า แล้ว commit chunks, สถานะ review, งาน done และล้าง checkpoint ใน transaction เดียว ครูยังต้องอนุมัติก่อนใช้ RAG หากมีข้อผิดพลาดชั่วคราวจะ retry ตาม MAX_JOB_ATTEMPTS เดิม; ข้อผิดพลาดถาวร/ครบจำนวนครั้งยังเป็น failed และเก็บ checkpoint ไว้ ไม่เริ่มงาน failed ใหม่เอง
+
+ถ้า process หยุดหลัง API ตอบแต่ก่อน checkpoint commit อาจต้องเรียกชุดนั้นซ้ำ; ชุดที่ commit แล้วจะไม่ถูกอ่านซ้ำ การใช้ checkpoint ลดงานซ้ำได้แต่ไม่รับประกันการเรียก API แบบ exactly-once `PDF_MAX_OUTPUT_TOKENS` เป็นงบต่อชุด (ค่าเริ่มต้น 16384) หากคำตอบไม่ครบจะไม่บันทึกชุดนั้นและไม่สร้าง chunks บางส่วน

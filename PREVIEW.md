@@ -1,3 +1,40 @@
+# Preview ลบไฟล์ทดสอบ
+
+อัปเดต 29 ตุลาคม 2569: ลบไฟล์ทดสอบ backend 4 ไฟล์และ LIFF 2 ไฟล์ตามที่ขอ
+
+- ลบ `tests/test_semantic_chunking.py`, `tests/test_pdf_ai_ingest.py`, `tests/test_material_pipeline.py`, `tests/test_document_deletion.py`, `liff/tests/dashboardView.test.mjs`, `liff/tests/tokenExpiry.test.mjs`
+- ปรับ `Dockerfile` และ `Dockerfile.worker` เอาคำสั่ง unittest และโฟลเดอร์ tests ออกจาก compileall โดยคงการตรวจ syntax ของโค้ดแอป
+- ลบคำสั่งรันชุดทดสอบที่ไม่มีแล้วจาก `README.md`; ไม่เปลี่ยนโค้ดการทำงาน PDF/checkpoint หรือฟังก์ชันแอป
+- ตรวจ syntax Python โดย parse AST และ git diff --check ผ่าน ไม่ได้ build Docker หรือ deploy
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview ลบไฟล์ example
+
+อัปเดต 29 ตุลาคม 2569: ลบ `.env.example` และ `liff/.env.example` ตามที่ขอ
+
+- ปรับ `README.md` และ `liff/README.md` ให้ตั้งค่าผ่านไฟล์ environment ในเครื่องหรือ Railway Variables โดยไม่อ้างไฟล์ที่ลบ
+- นำข้อยกเว้นของไฟล์ example ออกจาก `.dockerignore`, `liff/.dockerignore`, `liff/.gitignore`
+- คงการ ignore ไฟล์ secrets เดิม และไม่เปลี่ยนโค้ดแอปหรือ Railway Variables
+- ตรวจว่าไม่มีไฟล์ example ใน source และไม่มีการอ้างอิงที่ใช้งานอยู่เหลือ (ยกเว้นประวัติใน PREVIEW.md); git diff --check ผ่าน ไม่รันทดสอบแอปเพราะแก้เฉพาะเอกสารและรายการไฟล์
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview อ่าน PDF ชุดละ 2 หน้าและบันทึก checkpoint
+
+อัปเดต 29 ตุลาคม 2569: ปรับตัวอ่าน OpenAI ให้ส่ง PDF ชุดละ 2 หน้า (ชุดสุดท้าย 1 หน้าได้) และคืน sections แยกตามเลขหน้าต้นฉบับ ก่อนรวม semantic chunks เมื่ออ่านครบ
+
+- บันทึกทุกชุดที่ตรวจผ่านลง `jobs.payload.pdf_checkpoint` ด้วย transaction แยก มี checksum, model, prompt version, จำนวนหน้า, batch size, output limit และผลที่อ่านแล้ว ไม่ต้องเพิ่มตารางหรือ migration
+- เมื่อ retry งานเดิมหรือ worker รับงานต่อหลัง lease หมด ใช้ checkpoint ล่าสุดแล้วอ่านต่อเฉพาะชุดที่เหลือ พร้อมหัวข้อจากชุดก่อน ตรวจเลขหน้าครบ/ไม่ซ้ำ/เรียงถูก และปฏิเสธ checkpoint ที่ไฟล์หรือการตั้งค่าเปลี่ยน
+- ต่ออายุ lease ก่อนแต่ละชุด และตรวจ attempt/state/lease ก่อนเขียน checkpoint ป้องกัน stale worker เขียนทับ
+- เมื่ออ่านครบ สร้าง chunks ทุกหน้าร่วมกัน แล้ว commit chunks, review, done และล้าง checkpoint/error ใน transaction เดียว ยังคงต้องให้ครูอนุมัติก่อนใช้ RAG
+- ข้อจำกัด: retry ใช้ MAX_JOB_ATTEMPTS เดิม ไม่เริ่มงาน failed ใหม่อัตโนมัติ; หากหยุดหลัง API ตอบแต่ก่อน commit อาจเรียกซ้ำเฉพาะชุดนั้น; PDF_MAX_OUTPUT_TOKENS=16384 เป็นงบต่อชุด หากผลไม่ครบไม่บันทึกชุดนั้น
+- ไฟล์ที่แก้: `components/pdf_ai.py`, `worker/run.py`, `tests/test_pdf_ai_ingest.py`, `.env.example`, `README.md`, `liff/README.md`, `PREVIEW.md`
+- ผลตรวจ: backend 47 tests ผ่าน รวม 5 หน้าใช้ 3 calls, checkpoint resume, final checkpoint ไม่เรียก API ซ้ำ, metadata mismatch, หน้าไม่ครบ/ซ้ำ, save failure, worker retry และ stale worker; compile และ git diff --check ผ่าน
+- ทดสอบ OpenAI SDK ด้วย HTTP จำลอง และ SQL persistence boundary ด้วย session จำลอง ยังไม่ได้ทดสอบ OpenAI/PostgreSQL จริงหรือ deploy
+
+## ประวัติ preview ก่อนหน้า
+
 # Preview อัปเดต main ล่าสุดและย้ายระบบ AI เป็น OpenAI GPT
 
 อัปเดต 29 ตุลาคม 2569: ตรวจงานที่ค้างและทำต่อจนเสร็จ โดยใช้ GitHub main commit `e20e85056cfd0b08c8da0d06208704a57336a211` เป็นฐานในเครื่อง จากเดิม `81dc5aacf0ec47b40d35d7f1c52d5e62ddcd98e4`

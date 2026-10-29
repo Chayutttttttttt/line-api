@@ -85,6 +85,7 @@ def process_job(claim):
                 document = db.get(Document, version.document_id)
                 is_pdf = version.filename.lower().endswith(".pdf") and document.purpose == "teaching"
                 source_key, checksum = version.storage_key, version.checksum
+                checkpoint = job.payload.get("pdf_checkpoint")
                 version.status = "processing"
                 db.add(version)
                 db.commit()
@@ -96,19 +97,34 @@ def process_job(claim):
                 def renew_lease(page_no: int, total_pages: int):
                     with Session(engine, expire_on_commit=False) as db:
                         current = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
-                        if current.state != "running" or current.attempts != attempt:
+                        if (current.state != "running" or current.attempts != attempt
+                                or current.lease_until <= utc_now()):
                             raise RuntimeError("INGEST_LEASE_LOST")
                         current.lease_until = utc_now() + timedelta(seconds=max(90, JOB_TIMEOUT_SECONDS))
                         current.updated_at = utc_now()
                         db.add(current)
                         db.commit()
-                ai_pages = read_pdf_with_openai(read_file(source_key, checksum), on_page=renew_lease)
+                def save_checkpoint(value):
+                    with Session(engine, expire_on_commit=False) as db:
+                        current = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
+                        if (current.state != "running" or current.attempts != attempt
+                                or current.lease_until <= utc_now()):
+                            raise RuntimeError("INGEST_LEASE_LOST")
+                        current.payload = {**current.payload, "pdf_checkpoint": value}
+                        current.updated_at = utc_now()
+                        db.add(current)
+                        db.commit()
+                ai_pages = read_pdf_with_openai(read_file(source_key, checksum), on_page=renew_lease,
+                    checkpoint=checkpoint, on_checkpoint=save_checkpoint)
             with Session(engine, expire_on_commit=False) as db:
                 job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
                 if (job.state != "running" or job.attempts != attempt
                         or job.lease_until <= utc_now()):
                     return
                 ingest(db, version_id, ai_pages=ai_pages)
+                # Chunks, review status and checkpoint cleanup commit atomically.
+                job.payload = {k: v for k, v in job.payload.items()
+                    if k not in {"pdf_checkpoint", "error_code"}}
                 # Embeddings will be queued only after a teacher approves publication.
                 job.state, job.updated_at = "done", utc_now()
                 db.add(job)
@@ -245,7 +261,7 @@ def process_job(claim):
             "NO_SEARCHABLE_TEXT", "EMPTY_OR_TOO_LARGE_TEXT_USE_TEXT_PDF",
             "PDF_AI_REQUIRED", "PDF_AI_KEY_NOT_CONFIGURED", "PDF_AI_RESPONSE_INVALID",
             "PDF_AI_MODEL_NOT_CONFIGURED", "PDF_AI_RESPONSE_INCOMPLETE", "PDF_AI_REFUSAL",
-            "LLM_MODEL_REQUIRED",
+            "LLM_MODEL_REQUIRED", "PDF_CHECKPOINT_MISMATCH", "PDF_CHECKPOINT_INVALID",
             "PDF_PAGE_TOO_LONG", "PDF_AI_NO_SEARCHABLE_TEXT", "PDF_AI_TEXT_TOO_LARGE",
             "INVALID_PDF", "ENCRYPTED_OR_TOO_MANY_PAGES", "UNSUPPORTED_FILE"}
         code = str(error) if isinstance(error, ValueError) and str(error) in safe_codes else (
