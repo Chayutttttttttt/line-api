@@ -122,7 +122,7 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         <label>ไฟล์ PDF, DOCX หรือ TXT ไม่เกิน 10 MB<input type="file" name="file" required accept=".pdf,.docx,.txt" className="pilot-input" /></label>
         {uploadPurpose === "teaching" && <label className="flex items-start gap-3 rounded-xl bg-surface-soft p-3 text-sm">
           <input type="checkbox" required className="mt-1 h-5 w-5 shrink-0" />
-          <span>ฉันมีสิทธิ์ใช้งานเอกสารนี้ และรับทราบว่าไฟล์ PDF จะถูกส่งให้ Gemini อ่านเนื้อหาเพื่อช่วยสร้างข้อความและคำสำคัญ ก่อนให้ครูตรวจอนุมัติ</span>
+          <span>ฉันมีสิทธิ์ใช้งานเอกสารนี้ และรับทราบว่าไฟล์ PDF จะถูกส่งให้ OpenAI อ่านเนื้อหาเพื่อช่วยสร้างข้อความและคำสำคัญ ก่อนให้ครูตรวจอนุมัติ</span>
         </label>}
         <button disabled={busy} className="pilot-button">เพิ่มไฟล์สอนในรายวิชา</button>
       </form>}

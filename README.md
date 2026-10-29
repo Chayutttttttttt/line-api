@@ -9,9 +9,9 @@
 - ตรวจ LINE ID token กับ LINE ก่อนสร้าง opaque bearer session เก็บเฉพาะ hash ของ session token ในฐานข้อมูล ไม่ print token บทบาทมาจากสมาชิกโรงเรียนและรายวิชาที่ผู้ดูแลเพิ่ม
 - รับ signed raw webhook ที่ `/webhook` และ `/webhooks/line` บันทึก event + job ในธุรกรรมเดียว และกัน event ซ้ำด้วย UNIQUE
 - SQL worker มี lease, retry, stale-worker fencing และจัดลำดับงานรายผู้ใช้ บันทึกคำตอบกับ outbox ในธุรกรรมเดียว Push ใช้ retry key เดิม สถานะ `accepted` หมายถึง LINE API รับ ไม่ใช่ส่งถึงหรืออ่านแล้ว
-- อัปโหลด PDF, DOCX, TXT สูงสุด 10 MB: PDF แบบสื่อการสอนให้ Gemini อ่านเป็นรายหน้า (ไม่ใช้ pypdf.extract_text), สร้างข้อความและ Keywords ที่ผูกกับ Chunks/เลขหน้า; DOCX/TXT ยังใช้ Python อ่านข้อความทั่วไป ครูต้องตรวจและอนุมัติ Checklist ก่อนเอกสารสอนเข้าสู่ระบบค้นหา Evidence ไม่ส่ง Gemini
-- แยกเอกสาร `teaching` กับ `evidence` และจัดชนิดสื่อ `lesson`, `textbook`, `worksheet`, `solution`, `slides`, `reference` พร้อม topic_id เฉพาะในรายวิชา ค้นด้วย Thai lexical + character grams เสริม Vector Gemini 768 มิติแบบ opt-in (`EMBEDDINGS_ENABLED=true`) และ fallback เป็น lexical เมื่อ Vector API มีปัญหา
-- Gemini adapter มี schema ตรวจ citation กับ chunk ที่ส่งจริง จำกัดเวลาและ output เก็บ model/prompt version กับ usage ไม่เปิดเครื่องมือเขียนข้อมูลให้โมเดล
+- อัปโหลด PDF, DOCX, TXT สูงสุด 10 MB: PDF แบบสื่อการสอนให้ OpenAI อ่านเป็นรายหน้า (ไม่ใช้ pypdf.extract_text), สร้างข้อความและ Keywords ที่ผูกกับ Chunks/เลขหน้า; DOCX/TXT ยังใช้ Python อ่านข้อความทั่วไป ครูต้องตรวจและอนุมัติ Checklist ก่อนเอกสารสอนเข้าสู่ระบบค้นหา Evidence ไม่ส่ง OpenAI
+- แยกเอกสาร `teaching` กับ `evidence` และจัดชนิดสื่อ `lesson`, `textbook`, `worksheet`, `solution`, `slides`, `reference` พร้อม topic_id เฉพาะในรายวิชา ค้นด้วย Thai lexical + character grams เสริม Vector OpenAI 768 มิติแบบ opt-in (`EMBEDDINGS_ENABLED=true`) และ fallback เป็น lexical เมื่อ Vector API มีปัญหา
+- OpenAI adapter มี schema ตรวจ citation กับ chunk ที่ส่งจริง จำกัดเวลาและ output เก็บ model/prompt version กับ usage ไม่เปิดเครื่องมือเขียนข้อมูลให้โมเดล
 - แบบฝึก 6 รูปแบบ: ปรนัย จริง/เท็จ ตัวเลขพร้อม tolerance/หน่วย คำตอบสั้นตามรายการ เซตจำนวนเต็ม และคำตอบอธิบายที่ครูตรวจ ไม่ใช้ `eval` ผูกกับรุ่นโจทย์ ไม่เปิดเฉลยก่อนส่ง และกัน submission ซ้ำ
 - คำตอบอธิบายเป็น `pending_review` ไม่นับเป็นถูก/ผิดหรือจำนวนฝึกอิสระที่ตรวจแล้ว ครูในวิชาให้คะแนน 0–100 พร้อมข้อเสนอแนะ ห้ามตรวจของตัวเอง ผู้เรียนดูผลล่าสุดในหน้าความก้าวหน้า
 - งานใช้ Idempotency-Key และ revision แผนสอบต้องเปิดใช้ก่อนสร้างเตือน การเตือนต้อง opt-in ตรวจ revision เวลาเงียบ และสิทธิ์ก่อนส่ง
@@ -87,11 +87,38 @@ Migration ใหม่ `20261021_multisubject` เพิ่มข้อมูล
 
 `db.migrate` เปิด extension ก่อน migration แรกเพื่อรองรับ vector column ไม่แก้ migration ที่สร้างอัตโนมัติเดิม หากมีข้อมูลสมาชิกข้ามโรงเรียนอยู่แล้ว migration ใหม่จะปฏิเสธ ต้องแก้ข้อมูลตามหลักฐานก่อน deploy
 
+## OpenAI GPT configuration (29 ตุลาคม 2569)
+
+ใช้ OpenAI Python SDK สำหรับทั้งการตอบคำถามและอ่าน PDF ผ่าน Responses API + Structured Outputs:
+
+```dotenv
+LLM_API_KEY=<OpenAI API key>
+LLM_MODEL=gpt-5.4-mini
+PDF_READER_MODEL=gpt-5.4-mini
+LLM_MAX_OUTPUT_TOKENS=4096
+PDF_MAX_OUTPUT_TOKENS=16384
+PDF_AI_MAX_PAGES=40
+AI_ENABLED=true
+EMBEDDINGS_ENABLED=false
+EMBEDDING_MODEL=text-embedding-3-small
+```
+
+- ตั้งค่าบน API และ worker ให้ตรงกัน; ไม่ใช้ `GEMINI_API_KEY` แล้ว และต้องเปลี่ยนค่าที่เคยตั้ง `PDF_READER_MODEL`/`EMBEDDING_MODEL` เป็นโมเดล Gemini ด้วย ค่า PDF_READER_MODEL ที่ว่างหรือไม่ได้ตั้งจะใช้ LLM_MODEL
+- `AI_ENABLED` เปิด/ปิดการตอบนักเรียนเท่านั้น การอัปโหลด PDF สอนจะเรียก OpenAI แม้ AI_ENABLED=false เพื่อให้ครูตรวจเอกสารก่อนเปิดแชต; evidence ไม่ส่งให้โมเดล
+- PDF ส่งเป็น base64 ของไฟล์ทีละหน้าโดยไม่สร้างไฟล์ค้างใน OpenAI Files API ใช้ `store=False`; ยังคง semantic sections, topic continuity, 2400-character chunks และ page spans จาก main ล่าสุด
+- ไม่ส่ง temperature; output limits รวม reasoning tokens ด้วย การตอบแชตใช้ timeout 30 วินาทีต่อครั้งและซ่อม schema/citation ได้ 1 ครั้ง การอ่าน PDF ใช้ 60 วินาทีต่อหน้าและต่ออายุ job lease ก่อนอ่านแต่ละหน้า; ปิด SDK retries ให้ worker จัดการข้อผิดพลาดชั่วคราว
+- การตอบไม่ครบหรือ refusal จะไม่ถูกแสดงเป็นคำตอบมีหลักฐาน และ PDF ที่อ่านไม่ครบ/ผิด schema จะไม่ถูกบันทึกเป็นเอกสารพร้อมอนุมัติ
+- หากเปิด embeddings ใช้ `text-embedding-3-small` พร้อม `dimensions=768` ให้ตรงคอลัมน์เดิม ไม่ต้องเปลี่ยน schema ฐานข้อมูลสำหรับการย้าย provider นี้ การค้นกรอง embedding_model ให้ตรงกับโมเดลปัจจุบันจึงไม่ผสม vector เก่าจาก Gemini; กด **สร้าง/อัปเดต Vector ของไฟล์นี้** เพื่อทำดัชนีเอกสารที่อนุมัติแล้วใหม่
+- การอัปเดตจาก checkout เก่าต้องรัน migrations ที่มากับ main ล่าสุดตามขั้นตอนปกติ และใช้ API/worker รุ่นเดียวกัน เอกสารเดิมไม่ถูกอ่านหรือแบ่ง chunks ใหม่อัตโนมัติ
+- ตรวจแบบไม่เรียก API: `.venv/bin/python -m unittest discover -s tests -v` ครอบคลุม OpenAI SDK บน HTTP จำลอง ไม่ใช่การยืนยันสิทธิ์โมเดล/เครดิตหรือคุณภาพอ่าน PDF ของบัญชีจริง
+
+อ้างอิง: [PDF inputs](https://developers.openai.com/api/docs/guides/file-inputs), [GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [Embedding dimensions](https://developers.openai.com/api/docs/guides/embeddings)
+
 ## ขั้นตอนตรวจรับเอกสาร
 
 1. ครูอัปโหลด roadmap และแบบฟอร์มเป็น `evidence` ส่วนเอกสารบทเรียนที่มีสิทธิ์ใช้ให้อัปโหลดเป็น `teaching` ไม่ถือไฟล์โครงการเป็นแหล่งเฉลย
-2. รอ Worker อ่านไฟล์ PDF ด้วย Gemini ให้สถานะ `review` แล้วครูเปิดต้นฉบับเทียบข้อความ สูตร ตาราง คำสำคัญ และเลขหน้า; DOCX/TXT ยังเป็น text parser และไม่มีเลขหน้าจริง PDF ที่อ่านไม่ชัดจะมีคำเตือนให้ตรวจเอง; หาก AI อ่านไม่สำเร็จจะเป็น `failed`
-3. เอกสาร `teaching` จะไม่ถูกใช้ตอบ AI ใน LINE จนกว่าครูจะยืนยัน Checklist ทุกข้อและ rubric ทุกด้านผ่าน พร้อมกดอนุมัติจริง (`pilot`) ในหน้า “ดูและแก้ไฟล์”; สิทธิ์เอกสารและความถูกต้องยังต้องให้ครูยืนยัน ไม่ถือว่า Gemini อ่านถูกทั้งหมด
+2. รอ Worker อ่านไฟล์ PDF ด้วย OpenAI ให้สถานะ `review` แล้วครูเปิดต้นฉบับเทียบข้อความ สูตร ตาราง คำสำคัญ และเลขหน้า; DOCX/TXT ยังเป็น text parser และไม่มีเลขหน้าจริง PDF ที่อ่านไม่ชัดจะมีคำเตือนให้ตรวจเอง; หาก AI อ่านไม่สำเร็จจะเป็น `failed`
+3. เอกสาร `teaching` จะไม่ถูกใช้ตอบ AI ใน LINE จนกว่าครูจะยืนยัน Checklist ทุกข้อและ rubric ทุกด้านผ่าน พร้อมกดอนุมัติจริง (`pilot`) ในหน้า “ดูและแก้ไฟล์”; สิทธิ์เอกสารและความถูกต้องยังต้องให้ครูยืนยัน ไม่ถือว่า OpenAI อ่านถูกทั้งหมด
 4. สร้างโจทย์ร่าง ใส่เฉลย คำใบ้ และเหตุผล แล้วครูรับรองแต่ละข้อ โจทย์ที่เผยแพร่เป็น immutable ให้สร้างข้อ/รุ่นใหม่เพื่อแก้เนื้อหา
 5. บันทึก T01–T12 พร้อม commit, expected/actual และไฟล์หลักฐาน แต่ละผลเป็น record ใหม่ ไม่เขียนทับประวัติเดิม
 6. ในวิชาใหม่ ให้ครูจัดโจทย์ ผลคาดหวัง และเงื่อนไขผิดพลาดให้ตรงวิชาครบ 80 กรณีผ่านหน้าหลักฐานตรวจรับก่อน แล้วประเมิน AI โดยใช้ run UUID เดียวกันสำหรับครูสองคน rubric 0–3 ตาม PDF แยกจาก rubric 0–2 ของแบบตรวจเนื้อหา Word บันทึกข้อผิดพลาดวิกฤตทุกครั้ง การแก้กรณีทดสอบเพิ่ม course revision และต้องใช้รอบประเมินใหม่ ห้ามรวมผลต่าง revision ในรอบเดียว
@@ -115,8 +142,8 @@ npm --prefix liff run build -- --webpack
 
 ## ข้อจำกัดที่ต้องตรวจจริงก่อนนำร่อง
 
-- ยังไม่ทดสอบ OAuth, S3 Bucket, Gemini และ LINE Push กับบัญชีจริงหรือโหลด 30 ผู้ใช้บน Railway ไม่ใช้ผล mock แทนหลักฐานเหล่านี้
-- Thai lexical retrieval ผสม Keywords ที่ Gemini สร้างแล้วเชื่อมกับ Chunks และรองรับ Vector ranking แบบเลือกเปิด PDF สแกนใช้ความสามารถมองเห็นเอกสารของ Gemini แต่ยังต้องตรวจผลจริง; ยังไม่มี OCR Python, การรับภาพโจทย์ หรือผู้ให้บริการ LLM ตัวที่สอง
+- ยังไม่ทดสอบ OAuth, S3 Bucket, OpenAI และ LINE Push กับบัญชีจริงหรือโหลด 30 ผู้ใช้บน Railway ไม่ใช้ผล mock แทนหลักฐานเหล่านี้
+- Thai lexical retrieval ผสม Keywords ที่ OpenAI สร้างแล้วเชื่อมกับ Chunks และรองรับ Vector ranking แบบเลือกเปิด PDF สแกนใช้ความสามารถมองเห็นเอกสารของ OpenAI แต่ยังต้องตรวจผลจริง; ยังไม่มี OCR Python, การรับภาพโจทย์ หรือผู้ให้บริการ LLM ตัวที่สอง
 - ไม่เปิด AI tool calling ที่เขียนงาน/แผน การสร้างรายการใช้แบบฟอร์มและ API ที่ตรวจสิทธิ์ อาจเพิ่ม orchestration ภายหลังโดยใช้บริการเดียวกัน
 - ช่องทาง LINE ใช้ asynchronous Push จาก outbox ไม่มี Reply รับเรื่องทันที จึงต้องวัดเวลาและโควตา Push จริง
 - ยังไม่มีระบบคำเชิญด้วยตนเอง Rich Menu provisioning หรือการศึกษาคะแนนก่อน/หลังและติดตามผล ใช้ operator CLI เพิ่มสมาชิกที่ยืนยันตัวตนแล้ว
@@ -139,10 +166,10 @@ npm --prefix liff run build -- --webpack
 
 - อัปโหลด `purpose=teaching` พร้อม `material_type` (lesson/textbook/worksheet/solution/slides/reference), `topic_id` (ถ้ามี) และไฟล์ PDF/DOCX/TXT. รายการ `evidence` ไม่ถูกค้นโดย AI
 - Worker สกัดข้อความตามหน้า ตัด chunk โดยให้ความสำคัญกับการขึ้นย่อหน้า/บรรทัดและเก็บ `page_no`, `chunk_id`, `version_id`. หน้าที่ไม่มีข้อความจะแจ้ง `extraction_warning` และยังไม่มี OCR อัตโนมัติ
-- งาน Gemini ตรวจคำตอบ JSON กับ schema และ citation UUID ที่ส่งให้จริง ลองซ่อมคำตอบ 1 ครั้ง และแสดงข้อความข้อจำกัดหากตรวจไม่ผ่าน (ไม่แต่งอ้างอิง)
-- เปิด embedding เพิ่มได้ด้วย `EMBEDDINGS_ENABLED=true` และ `EMBEDDING_MODEL=gemini-embedding-001` (ต้องมี `LLM_API_KEY` และมีค่าใช้จ่าย API เพิ่ม). Worker สร้าง Vector 768 มิติโดยแบ่งงานย่อย 8 chunks/Job; การค้นจะผสม vector similarity กับ lexical search. ค่าเริ่มต้น **ปิด** เพื่อไม่เพิ่มค่าใช้จ่ายหรือทำให้ระบบเดิมสะดุด
+- งาน OpenAI ตรวจคำตอบ JSON กับ schema และ citation UUID ที่ส่งให้จริง ลองซ่อมคำตอบ 1 ครั้ง และแสดงข้อความข้อจำกัดหากตรวจไม่ผ่าน (ไม่แต่งอ้างอิง)
+- เปิด embedding เพิ่มได้ด้วย `EMBEDDINGS_ENABLED=true` และ `EMBEDDING_MODEL=text-embedding-3-small` (ต้องมี `LLM_API_KEY` และมีค่าใช้จ่าย API เพิ่ม). Worker สร้าง Vector 768 มิติโดยแบ่งงานย่อย 8 chunks/Job; การค้นจะผสม vector similarity กับ lexical search. ค่าเริ่มต้น **ปิด** เพื่อไม่เพิ่มค่าใช้จ่ายหรือทำให้ระบบเดิมสะดุด
 - สำหรับเอกสารเก่า ครูเปิดเอกสารแล้วกด **สร้าง/อัปเดต Vector ของไฟล์นี้** เพื่อเรียก `POST /documents/versions/{version_id}/index`. ต้องเปิด `EMBEDDINGS_ENABLED=true` ให้ทั้ง API และ Worker ก่อน; กดซ้ำระหว่างมีงานค้างจะถูกปฏิเสธ
-- เนื้อหาทุกประเภทต้องตรวจสิทธิ์ตามโรงเรียนและรายวิชา. ไฟล์ต้นฉบับอยู่ใน Private Object Storage ไม่ได้ส่ง URL สาธารณะให้ Gemini
+- เนื้อหาทุกประเภทต้องตรวจสิทธิ์ตามโรงเรียนและรายวิชา. ไฟล์ต้นฉบับอยู่ใน Private Object Storage ไม่ได้ส่ง URL สาธารณะให้ OpenAI
 - หลัง deploy migration `20261028_course_materials` ให้ตรวจ API/Worker/LIFF และทดลองถามจริงด้วย PDF ที่มีข้อความ; การอัปโหลดเอกสารที่มีลิขสิทธิ์ต้องมีสิทธิ์ใช้งาน
 
 
@@ -153,28 +180,28 @@ npm --prefix liff run build -- --webpack
 3. หมวด **สำหรับครู** แยกไฟล์และแบบฝึก (อัปโหลด/ดูและแก้ไฟล์/สร้างโจทย์), รายวิชาและตรวจคำตอบ (ตรวจคำตอบ/จัดหัวข้อ/ตั้งค่ารายวิชา), และตรวจรับระบบ (หลักฐาน/กรณีทดสอบ/คะแนน AI/รายงาน)
 4. หมวด **ผู้ดูแลระบบ** แยกโรงเรียน, รายวิชา/สมาชิก และบัญชีผู้ใช้ ไม่ปะปนในหน้าเดียว
 
-ระบบรับคำถามจาก LINE Webhook และ Worker ยังคงทำงานตามเดิม การปรับ LIFF ไม่ใช่การแก้ปัญหา Gemini Citation และไม่ใช่ผลทดสอบ End-to-End ของ LINE
+ระบบรับคำถามจาก LINE Webhook และ Worker ยังคงทำงานตามเดิม การปรับ LIFF ไม่ใช่การแก้ปัญหา OpenAI Citation และไม่ใช่ผลทดสอบ End-to-End ของ LINE
 
 
-## Gemini PDF reading + teacher review (28 ตุลาคม 2569)
+## OpenAI PDF reading + teacher review (28 ตุลาคม 2569)
 
-- ครูอัปโหลด PDF สื่อการสอน (ขนาดไม่เกิน 10 MB, เริ่มต้นไม่เกิน **40 หน้า** โดยปรับ `PDF_AI_MAX_PAGES` ได้แต่ไม่เกินขีดจำกัดตรวจ 200 หน้า) จาก private bucket Worker แยกหน้าโดยใช้ pypdf เฉพาะโครงสร้างไฟล์ แล้วให้ Gemini `PDF_READER_MODEL` อ่านแต่ละหน้าด้วย PDF vision และตอบ JSON เป็นข้อความ/Keywords/คำเตือน การอ่านนี้มีค่า Gemini API ต่อหน้าที่ส่ง ไม่ได้จำกัดโดยจำนวนคำถามของนักเรียน
-- ไฟล์ `evidence` ไม่ส่งไป Gemini และไม่เข้า RAG; DOCX/TXT ยังสกัดข้อความแบบเดิม
+- ครูอัปโหลด PDF สื่อการสอน (ขนาดไม่เกิน 10 MB, เริ่มต้นไม่เกิน **40 หน้า** โดยปรับ `PDF_AI_MAX_PAGES` ได้แต่ไม่เกินขีดจำกัดตรวจ 200 หน้า) จาก private bucket Worker แยกหน้าโดยใช้ pypdf เฉพาะโครงสร้างไฟล์ แล้วให้ OpenAI `PDF_READER_MODEL` อ่านแต่ละหน้าด้วย PDF vision และตอบ JSON เป็นข้อความ/Keywords/คำเตือน การอ่านนี้มีค่า OpenAI API ต่อหน้าที่ส่ง ไม่ได้จำกัดโดยจำนวนคำถามของนักเรียน
+- ไฟล์ `evidence` ไม่ส่งไป OpenAI และไม่เข้า RAG; DOCX/TXT ยังสกัดข้อความแบบเดิม
 - ระบบเก็บ Chunks พร้อม `version_id`, `page_no`, `chunk_id`, `text`, `keywords`. การค้นแบบข้อความไทย/character grams ใช้ Keywords ประกอบ; ไม่ได้เปลี่ยน Keywords ให้เป็นแหล่งอ้างอิงแทนข้อความต้นฉบับ และ Vector Embedding ยังเป็นโหมดเลือกเปิด
 - ไฟล์การสอนที่ AI อ่านเสร็จมีสถานะ `review` (ไม่ถูกใช้ตอบคำถามหรือดาวน์โหลดโดยนักเรียน) ครูต้องเปรียบเทียบ PDF ต้นฉบับกับข้อความ/เลขหน้า/Keywords แล้วแก้ไขในหน้า “ดูและแก้ไฟล์” ทำเครื่องหมาย Checklist 13 ข้อและยืนยัน rubric สี่ด้าน ก่อนอนุมัติระดับ `pilot` ให้เปลี่ยนเป็น `published`
-- หน้า/สูตรที่อ่านไม่ชัดจะมีคำเตือน; ครูต้องกรอกหมายเหตุเพื่อยืนยันผลตรวจหากพบคำเตือน และห้ามถือว่าการอ่านจาก Gemini แม่นยำ 100%
+- หน้า/สูตรที่อ่านไม่ชัดจะมีคำเตือน; ครูต้องกรอกหมายเหตุเพื่อยืนยันผลตรวจหากพบคำเตือน และห้ามถือว่าการอ่านจาก OpenAI แม่นยำ 100%
 - หากไม่มี `LLM_API_KEY`, โมเดลตอบ JSON ผิด หรือจำนวนหน้าเกินขีดจำกัด งานจะเป็น `failed` ไม่ fallback ไปใช้ข้อความ PDF ที่ Python อ่านผิด และไม่เผยแพร่เอกสารอัตโนมัติ
-- อย่าอัปโหลดเอกสารที่ไม่มีสิทธิ์ส่งให้ผู้ให้บริการประมวลผล AI; การอ่านไฟล์ด้วย Gemini อาจมีค่าใช้จ่ายเพิ่มตามจำนวนหน้า
+- อย่าอัปโหลดเอกสารที่ไม่มีสิทธิ์ส่งให้ผู้ให้บริการประมวลผล AI; การอ่านไฟล์ด้วย OpenAI อาจมีค่าใช้จ่ายเพิ่มตามจำนวนหน้า
 - Migration `20261028_chunk_keywords` เพิ่มคอลัมน์ JSONB แบบไม่ลบข้อมูล Chunk เดิม; เอกสารที่เผยแพร่แล้วก่อนอัปเกรดยังคงเผยแพร่ ส่วนเอกสารสถานะ `review` จะไม่ถูกค้นจนกว่าครูอนุมัติ
 
 
 ## Semantic Chunking ตามหัวข้อ (28 ตุลาคม 2569)
 
-- เมื่อครูอัปโหลด **PDF ใหม่** Gemini อ่านแต่ละหน้าในรอบเดิมและส่งรายการ `sections` (หัวข้อ `topic`, ข้อความต้นฉบับ `text`, `keywords`) แทนการแบ่งตามหน้าเป็นหลัก ไม่เรียก Gemini เพิ่มเพื่อแบ่ง Chunks
+- เมื่อครูอัปโหลด **PDF ใหม่** OpenAI อ่านแต่ละหน้าในรอบเดิมและส่งรายการ `sections` (หัวข้อ `topic`, ข้อความต้นฉบับ `text`, `keywords`) แทนการแบ่งตามหน้าเป็นหลัก ไม่เรียก OpenAI เพิ่มเพื่อแบ่ง Chunks
 - Python รวม Sections ที่ต่อเนื่องกันและมี **ชื่อหัวข้อตรงกัน** แม้ต่อข้ามหน้ากระดาษ โดยมีเพดานข้อความ 2,400 ตัวอักษรต่อ Chunk สำหรับควบคุม Context; หัวข้อต่างกันจะไม่ถูกผสาน และช่วงที่เกินเพดานจะตัดตามขอบเขตย่อหน้า
 - เก็บ `chunks.topic`, `chunks.page_no` (หน้าเริ่มต้นเดิม), `chunks.page_end`, Keywords และ `chunk_id` เพื่อค้นและอ้างอิง LINE ว่า "หน้า 4–6" ได้ ข้อมูลเดิมย้ายแบบ additive ด้วย Migration `20261028_semantic_chunks`
-- LIFF หน้าครูสามารถตรวจ/แก้หัวข้อ ข้อความ Keywords หน้าเริ่มต้น และหน้าสิ้นสุดก่อนผ่าน Checklist แล้วอนุมัติเอกสาร หาก Gemini ตีหัวข้อหรืออ่านข้อความผิด ต้องให้ครูตรวจแก้กับ PDF จริง
-- แหล่งข้อมูลเก่าไม่มี Semantic Sections ไม่ถูกแปลงโดยอัตโนมัติ; จะได้ Semantic Chunks เมื่ออัปโหลดไฟล์ PDF เป็นรุ่นใหม่ ส่วน DOCX/TXT ยังใช้การแยกข้อความตามย่อหน้าเป็น fallback เพราะไม่มี Gemini PDF Vision สำหรับไฟล์สองชนิดนี้
+- LIFF หน้าครูสามารถตรวจ/แก้หัวข้อ ข้อความ Keywords หน้าเริ่มต้น และหน้าสิ้นสุดก่อนผ่าน Checklist แล้วอนุมัติเอกสาร หาก OpenAI ตีหัวข้อหรืออ่านข้อความผิด ต้องให้ครูตรวจแก้กับ PDF จริง
+- แหล่งข้อมูลเก่าไม่มี Semantic Sections ไม่ถูกแปลงโดยอัตโนมัติ; จะได้ Semantic Chunks เมื่ออัปโหลดไฟล์ PDF เป็นรุ่นใหม่ ส่วน DOCX/TXT ยังใช้การแยกข้อความตามย่อหน้าเป็น fallback เพราะไม่มี OpenAI PDF Vision สำหรับไฟล์สองชนิดนี้
 - การจับชื่อหัวข้อเป็นเกณฑ์ที่ตั้งใจให้ระมัดระวัง: ถ้าระบุชื่อหัวข้อต่างกันระบบจะไม่รวมข้ามหน้าเพื่อป้องกันการรวมความหมายผิด; รูปแบบนี้ต้อง Benchmark กับชุดคำถามจริงก่อนอ้างว่าประหยัด Token หรือแม่นยำขึ้น
 
 

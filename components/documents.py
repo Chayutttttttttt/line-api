@@ -92,12 +92,12 @@ def extract_pages(data: bytes, filename: str) -> list[tuple[int, str]]:
     return pages
 
 
-def ingest(db: Session, version_id: UUID, ai_pages: list[tuple[int, str, list[str], str | None]] | None = None):
+def ingest(db: Session, version_id: UUID, ai_pages: list[tuple] | None = None):
     version = db.exec(select(DocumentVersion).where(DocumentVersion.id == version_id).with_for_update()).first()
     if not version or version.status not in {"uploaded", "processing"}:
         return
     document = db.get(Document, version.document_id)
-    # Project evidence is never sent to Gemini nor indexed for learner retrieval.
+    # Project evidence is never sent to GPT nor indexed for learner retrieval.
     if document.purpose == "evidence":
         version.status = "review"
         version.revision += 1
@@ -110,7 +110,7 @@ def ingest(db: Session, version_id: UUID, ai_pages: list[tuple[int, str, list[st
     else:
         data = read_file(version.storage_key, version.checksum)
         pages = [(n, content, [], None) for n, content in extract_pages(data, version.filename)]
-    # Gemini provides semantic sections; Python merges matching topics across
+    # GPT provides semantic sections; Python merges matching topics across
     # pages, retaining exact first/last page for reviewable citations.
     blank = [page[0] for page in pages if not page[1].strip() and page[0] is not None]
     warnings = [f"หน้า {page[0]}: {page[3]}" for page in pages if page[3]]

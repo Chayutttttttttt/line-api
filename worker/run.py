@@ -18,10 +18,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
-from agent.gemini import PROMPT_VERSION, generate_answer
+from agent.llm import PROMPT_VERSION, generate_answer
 from components.documents import TEACHING_READY_STATUSES, ingest, search_materials
 from components.embeddings import embed_document_batch
-from components.pdf_ai import read_pdf_with_gemini
+from components.pdf_ai import read_pdf_with_openai
 from components.storage import read_file
 from components.login import course_access
 from config import (CHANNEL_ACCESS_TOKEN, EMBEDDING_MODEL, EMBEDDINGS_ENABLED, JOB_TIMEOUT_SECONDS, LINE_PROVIDER_ID,
@@ -89,7 +89,7 @@ def process_job(claim):
                 db.add(version)
                 db.commit()
 
-            # Gemini receives private PDF bytes outside any SQL transaction.
+            # GPT receives private PDF bytes outside any SQL transaction.
             # We do not call PdfReader.extract_text() for PDF documents.
             ai_pages = None
             if is_pdf:
@@ -102,7 +102,7 @@ def process_job(claim):
                         current.updated_at = utc_now()
                         db.add(current)
                         db.commit()
-                ai_pages = read_pdf_with_gemini(read_file(source_key, checksum), on_page=renew_lease)
+                ai_pages = read_pdf_with_openai(read_file(source_key, checksum), on_page=renew_lease)
             with Session(engine, expire_on_commit=False) as db:
                 job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
                 if (job.state != "running" or job.attempts != attempt
@@ -244,6 +244,8 @@ def process_job(claim):
             "INVALID_EMBEDDING", "EMBEDDING_COUNT_MISMATCH",
             "NO_SEARCHABLE_TEXT", "EMPTY_OR_TOO_LARGE_TEXT_USE_TEXT_PDF",
             "PDF_AI_REQUIRED", "PDF_AI_KEY_NOT_CONFIGURED", "PDF_AI_RESPONSE_INVALID",
+            "PDF_AI_MODEL_NOT_CONFIGURED", "PDF_AI_RESPONSE_INCOMPLETE", "PDF_AI_REFUSAL",
+            "LLM_MODEL_REQUIRED",
             "PDF_PAGE_TOO_LONG", "PDF_AI_NO_SEARCHABLE_TEXT", "PDF_AI_TEXT_TOO_LARGE",
             "INVALID_PDF", "ENCRYPTED_OR_TOO_MANY_PAGES", "UNSUPPORTED_FILE"}
         code = str(error) if isinstance(error, ValueError) and str(error) in safe_codes else (

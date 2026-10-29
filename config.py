@@ -22,12 +22,14 @@ S3_BUCKET = os.getenv("S3_BUCKET", "")
 S3_REGION = os.getenv("S3_REGION", "auto")
 S3_ADDRESSING_STYLE = os.getenv("S3_ADDRESSING_STYLE", "virtual")
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
-PDF_READER_MODEL = os.getenv("PDF_READER_MODEL", "gemini-2.5-flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-5.4-mini").strip()
+PDF_READER_MODEL = os.getenv("PDF_READER_MODEL", "").strip() or LLM_MODEL
 PDF_AI_MAX_PAGES = int(os.getenv("PDF_AI_MAX_PAGES", "40"))
-LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY")
+PDF_MAX_OUTPUT_TOKENS = int(os.getenv("PDF_MAX_OUTPUT_TOKENS", "16384"))
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "4096"))
 EMBEDDINGS_ENABLED = os.getenv("EMBEDDINGS_ENABLED", "false").lower() == "true"
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small").strip()
 AI_ENABLED = os.getenv("AI_ENABLED", "false").lower() == "true"
 MAX_DAILY_AI_REQUESTS = int(os.getenv("MAX_DAILY_AI_REQUESTS", "100"))
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "90"))

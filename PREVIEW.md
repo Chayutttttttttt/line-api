@@ -1,3 +1,138 @@
+# Preview อัปเดต main ล่าสุดและย้ายระบบ AI เป็น OpenAI GPT
+
+อัปเดต 29 ตุลาคม 2569: ตรวจงานที่ค้างและทำต่อจนเสร็จ โดยใช้ GitHub main commit `e20e85056cfd0b08c8da0d06208704a57336a211` เป็นฐานในเครื่อง จากเดิม `81dc5aacf0ec47b40d35d7f1c52d5e62ddcd98e4`
+
+- เก็บงาน local ก่อนอัปเดตไว้ใน Git stash `9286f153f5b596532d851d0111af4d9174bb7832` ชื่อ `backup local OpenAI migration before syncing main 2026-10-29` รวมไฟล์ agent/llm.py ที่ยังไม่ tracked แล้ว fast-forward main สำเนา /tmp ที่สร้างก่อนหน้าไม่อยู่แล้ว แต่ตรวจยืนยันว่า stash ยังเก็บงานครบ
+- ย้าย tutor เป็น `agent/llm.py` ใช้ OpenAI Responses API + Structured Outputs, `store=False`, ปิด SDK retries, ตรวจ citations/page spans และคงการซ่อมคำตอบผิด schema/citation 1 ครั้งจาก main ล่าสุด พร้อมข้อความสำรองสำหรับ refusal/คำตอบไม่ครบ
+- `components/pdf_ai.py` ส่ง PDF ทีละหน้าเป็น base64 ให้ OpenAI อ่าน semantic sections; ต่ออายุ lease ก่อนแต่ละหน้า คงการตรวจข้อผิดพลาดและไม่คืนเอกสารบางส่วนเมื่อหน้าถัดไปอ่านล้มเหลว ส่ง previous_topic เป็นข้อมูลแทนการแทรกในคำสั่งระบบ
+- คง Semantic Chunking เดิม: รวม sections หัวข้อตรงกันที่อยู่ติดกัน จำกัด 2400 ตัวอักษร พร้อมหน้าเริ่ม/สิ้นสุด รอครูตรวจอนุมัติ และคงฟังก์ชันใหม่จาก main เช่น LINE-only AI, admin และการลบเอกสาร
+- Embeddings ย้ายเป็น OpenAI `text-embedding-3-small` ขนาด 768 มิติเท่า schema เดิม ปิดเป็นค่าเริ่มต้น คง hybrid retrieval และการกรอง embedding_model เพื่อไม่ผสมเวกเตอร์ Gemini เก่า
+- เปลี่ยนข้อความการส่ง PDF และข้อผิดพลาดใน LIFF เป็น OpenAI พร้อมปรับ README และ .env.example
+
+## ไฟล์ที่แก้
+
+- `agent/gemini.py` → `agent/llm.py`, `components/pdf_ai.py`, `components/embeddings.py`, `worker/run.py`
+- `config.py`, `requirements.txt`, `.env.example`, `components/documents.py` (type/comment), `components/semantic_chunking.py` (comment)
+- `liff/components/teacherPanel.tsx`, `liff/lib/documentStatus.ts`, `liff/README.md`, `README.md`
+- `tests/test_material_pipeline.py`, `tests/test_pdf_ai_ingest.py`, `PREVIEW.md`
+- ไม่แก้ generated files หรือ migration ที่มากับ main ล่าสุด
+
+## ผลตรวจ
+
+- Backend: `python -m unittest discover -s tests -v` ผ่าน 40 tests รวม PDF/semantic chunking, OpenAI request/schema/repair/refusal/incomplete, embeddings และชุดลบเอกสารเดิม ใช้ SDK จริงกับ HTTP จำลอง ไม่มีค่า API
+- หลังแยก previous_topic ออกจาก instructions ทดสอบเฉพาะ PDF ซ้ำผ่าน 9 tests
+- ชุด Node tests ของ LIFF ทั้ง 2 ไฟล์ผ่าน; การเปลี่ยน LIFF รอบนี้เป็นข้อความเท่านั้น ไม่ได้ทำ full Next.js build (ไม่มี node_modules ใน checkout)
+- API/worker imports, Python compile, pip check, dependency versions และ git diff --check ผ่าน
+- ยังไม่ได้เรียก OpenAI/LINE/ฐานข้อมูลจริง หรือทดสอบคุณภาพ PDF ด้วยบัญชีจริง
+
+## การตั้งค่าก่อนใช้งานจริง
+
+- ใช้ `LLM_API_KEY` เป็น OpenAI API key; ค่าเริ่มต้น `LLM_MODEL=gpt-5.4-mini` และ PDF_READER_MODEL ใช้ค่าเดียวกันเมื่อไม่ได้ตั้งแยก ตั้งทั้ง API และ worker ให้ตรงกัน
+- ตั้ง `AI_ENABLED=true` เมื่อต้องการให้ตอบนักเรียน; ตัวอ่าน PDF เรียก API ได้แม้ AI_ENABLED=false เพื่อให้ครูเตรียมเอกสารก่อนเปิดแชต
+- เปลี่ยน PDF_READER_MODEL/EMBEDDING_MODEL ที่เคยระบุ Gemini ใน Railway ด้วย ไม่มี fallback ไปใช้ GEMINI_API_KEY
+- Output budget: แชต 4096 (`LLM_MAX_OUTPUT_TOKENS`), PDF 16384 (`PDF_MAX_OUTPUT_TOKENS`) รวม reasoning tokens; PDF เริ่มต้นสูงสุด 40 หน้า
+- หากเปิด embeddings ให้สร้าง/อัปเดต vector ของเอกสารที่อนุมัติแล้วใหม่ผ่านปุ่มเดิม ไม่ต้องแก้คอลัมน์ vector และไม่ต้องอัปโหลด PDF ใหม่เพื่อ reindex
+- ใช้ migrations จาก main ล่าสุดตามขั้นตอน deploy เดิม; ไม่มี migration เพิ่มสำหรับการย้าย OpenAI นี้
+- งานเสร็จในเครื่องเท่านั้น ยังไม่ได้ commit/push/deploy หรือเปลี่ยน Railway Variables
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview ตรวจ repo หลักและแก้ไขข้อสรุปเรื่อง Semantic Chunking
+
+อัปเดต 29 ตุลาคม 2569: อ่าน GitHub `Chayutttttttttt/line-api` โดยตรงที่ main commit `e20e85056cfd0b08c8da0d06208704a57336a211`; local HEAD คือ `81dc5aacf0ec47b40d35d7f1c52d5e62ddcd98e4` จึงเป็นคนละ revision คำอธิบายก่อนหน้าที่อ้าง local ไม่ตรงกับ repo หลัก
+
+- repo หลักใช้ LLM-assisted semantic/topic chunking สำหรับ PDF การสอนจริง: `worker/run.py` เรียก `read_pdf_with_gemini()` และ `ingest()` เรียก `build_semantic_chunks()`
+- `components/pdf_ai.py` ส่ง PDF ทีละหน้าให้ Gemini ถอดข้อความและแบ่ง sections พร้อม topic/keywords โดยส่งชื่อหัวข้อสุดท้ายของหน้าก่อนเพื่อช่วยความต่อเนื่อง
+- `components/semantic_chunking.py` รวมส่วนติดกันที่ topic หลัง normalize ตรงกัน ภายในหน้าเดียวหรือหน้าถัดไป จำกัด 2400 ตัวอักษร ใช้ `chunk_page(..., overlap=0)` แบ่งส่วนยาว และเก็บ page_no/page_end; ไม่ใช่การใช้ embedding similarity หาแนวแบ่ง
+- `components/documents.py` มี vector + lexical retrieval แบบเลือกเปิดด้วย `EMBEDDINGS_ENABLED`; การมีโค้ดไม่ได้ยืนยันว่าเปิดใช้ใน Railway
+- repo หลักยังเรียก Google GenAI ทั้งอ่าน PDF และตอบคำถาม; `PDF_READER_MODEL` ค่าเริ่มต้น gemini-2.5-flash แยกจาก `LLM_MODEL` การตั้ง gpt-5.4-mini อย่างเดียวไม่เปลี่ยน SDK เป็น OpenAI
+- งานนี้แก้เฉพาะ `PREVIEW.md`; ไม่ pull/merge ทับงาน local ไม่เปลี่ยน GitHub/Variables และไม่ deploy ผลตรวจยืนยันโค้ด repo เท่านั้น ไม่ยืนยัน runtime หรือวิธีที่ใช้สร้าง chunks เก่า
+
+## ประวัติ preview ก่อนหน้า (อ้างอิง local revision ไม่ใช่ main บน GitHub)
+
+# Preview ประเมิน Semantic Chunking
+
+อัปเดต 29 ตุลาคม 2569: อธิบายว่า semantic chunking อาจช่วยรักษาบริบท แต่ไม่ได้รับประกันว่าคำตอบจะแม่นขึ้น และแยกจาก semantic retrieval ซึ่งโปรเจกต์ยังไม่ได้ใช้
+
+- ข้อเสนอสำหรับเอกสารการสอน: ทดลองแบ่งตามหัวข้อ/ย่อหน้าและรักษาโจทย์กับวิธีทำก่อน แล้วเปรียบเทียบ semantic chunking และการค้นหาแบบ keyword ร่วมกับ vector ด้วยคำถามจริง งบ context เท่ากัน และตรวจความถูกต้องของคำตอบ/อ้างอิง
+- ข้อจำกัดเดิมยังสำคัญ: ข้อความ PDF ที่สกัดผิดหรือการค้นหา lexical ที่ไม่พบคำพ้องความหมายไม่ได้ถูกแก้โดยเปลี่ยน chunking เพียงอย่างเดียว
+- หลักฐาน: งานวิจัย NAACL 2025 พบว่าผลดีของ semantic chunking ไม่สม่ำเสมอเมื่อเทียบกับต้นทุน: https://aclanthology.org/2025.findings-naacl.114/
+- งานนี้แก้เฉพาะ `PREVIEW.md`; ยังไม่ได้เปลี่ยนอัลกอริทึมหรือทดสอบ benchmark กับเอกสารจริงของโปรเจกต์
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview อธิบาย PDF, chunking และการส่งข้อมูลให้ GPT
+
+อัปเดต 29 ตุลาคม 2569: ตรวจโค้ดปัจจุบันเพื่ออธิบายกระบวนการรับ PDF, แบ่งข้อความ, ค้นหาเอกสาร และสร้างคำตอบ
+
+- ระบบไม่ได้ส่ง PDF ให้ GPT แบ่ง chunks: worker ใช้ `pypdf.PdfReader` สกัดข้อความทีละหน้า แล้วตัดด้วย Python ครั้งละไม่เกิน 2100 ตัวอักษร เลื่อนครั้งละ 1800 จึงซ้อนทับสูงสุด 300 ตัวอักษรภายในหน้าเดียวกัน
+- เก็บ chunks ใน PostgreSQL พร้อมรุ่นเอกสาร ลำดับ และเลขหน้า รอครูตรวจและอนุมัติเป็น published ก่อนใช้ตอบนักเรียน
+- ค้นหาแบบ lexical โดยให้คะแนนคำตรง หัวข้อ/keywords และ Thai character trigrams เลือกสูงสุด 5 chunks ที่คะแนนมากกว่า 0; ยังไม่มีการสร้าง embeddings หรือค้นหา vector ในเส้นทางนี้
+- ส่งคำถาม บริบทวิชา ข้อความ chunks และประวัติคำถามให้ OpenAI Responses API ในรูป JSON แล้วตรวจ chunk IDs ที่อ้างอิง; ถ้าไม่มี chunks จะไม่เรียก GPT
+- ข้อจำกัด: ไม่มี OCR หรือการส่งภาพ PDF ให้โมเดล, การตัดตามจำนวนตัวอักษรอาจตัดกลางประโยค/ตาราง/สมการ, การเปลี่ยน LLM_MODEL ไม่เปลี่ยนวิธี chunking
+- โค้ดที่ตรวจ: `components/documents.py`, `components/storage.py`, `worker/run.py`, `agent/llm.py`, `db/models.py`; งานนี้แก้เฉพาะ `PREVIEW.md` และไม่ได้ทดสอบการเรียก API จริงหรือ deploy
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview ตรวจชื่อโมเดลจาก Railway Variables
+
+อัปเดต 29 ตุลาคม 2569: เปิดลิงก์ Railway project AGENT / production ที่ผู้ใช้ให้ และตรวจ Variables ผ่าน connector กับหน้าเว็บ
+
+- Connector ปิดบังค่า variables (`valuesRedacted=true`): `worker` มี `LLM_MODEL`; `line-api` ยังไม่มีตัวแปรนี้ในค่าที่ใช้งานจริง
+- หน้าเว็บ `line-api` แสดง `LLM_MODEL` และ `LLM_API_KEY` ในรายการแก้ไขที่รอ deploy แต่ค่าปิดบังเป็น `*******` และไม่พบตัวควบคุมแสดงค่าในเซสชันนี้ จึงยังยืนยันชื่อโมเดลไม่ได้
+- ต้องอ่านค่า `LLM_MODEL` จากเซสชัน Railway ที่แสดงค่าได้ โดยไม่ต้องส่ง API key
+- ไฟล์ที่แก้ในงานนี้: `PREVIEW.md` เท่านั้น; ไม่เปลี่ยน Variables หรือ deploy
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview ตรวจสถานะการใช้ OpenAI API
+
+อัปเดต 29 ตุลาคม 2569: ตรวจโค้ด การตั้งค่า local และ Railway production เพื่อยืนยันสถานะการเชื่อมต่อ OpenAI โดยไม่เปิดเผยค่าคีย์
+
+- โค้ด `agent/llm.py` ใช้ OpenAI Responses API ผ่าน `LLM_API_KEY` แล้ว และ local ติดตั้ง OpenAI SDK 2.54.0
+- Local ไม่มี `.env`; ค่าที่โหลดได้คือ `AI_ENABLED=false` และไม่มี `LLM_API_KEY` / `LLM_MODEL`
+- Railway `line-api`: การเพิ่ม `LLM_API_KEY`, `LLM_MODEL` และลบ `GEMINI_API_KEY` ยังเป็น staged changes ไม่ได้ deploy; รายการตัวแปร live ยังมี `GEMINI_API_KEY` และไม่มี `AI_ENABLED`
+- Railway `worker`: รายการตัวแปร live มี `AI_ENABLED`, `GEMINI_API_KEY`, `LLM_MODEL` แต่ไม่มี `LLM_API_KEY`; connector ปิดบังค่า จึงไม่ยืนยันค่า AI_ENABLED หรือชื่อโมเดล
+- ก่อนใช้งานจริงต้อง deploy โค้ด OpenAI พร้อมตั้ง key/model และเปิด AI ให้บริการที่เกี่ยวข้อง โดยเฉพาะ worker ซึ่งเป็นผู้เรียกโมเดล; ยังไม่ได้ทดสอบคำขอ OpenAI จริง
+- งานนี้แก้เฉพาะ `PREVIEW.md`; ไม่เปลี่ยนโค้ดหรือการตั้งค่าบน Railway
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview เปลี่ยน LLM เป็น OpenAI GPT
+
+อัปเดต 29 ตุลาคม 2569: ปรับ `agent/llm.py` จาก Gemini เป็น OpenAI Responses API พร้อม Structured Outputs โดยใช้ `LLM_API_KEY` และ `LLM_MODEL` ตามชื่อตัวแปรที่ผู้ใช้เตรียมไว้ใน Railway
+
+- ไฟล์ที่แก้ในงานนี้: `agent/llm.py`, `config.py`, `requirements.txt`, `.env.example`, `README.md`, `PREVIEW.md` ต่อจากการเปลี่ยนชื่อไฟล์และ import ใน `worker/run.py` ที่มีอยู่ก่อนแล้ว
+- เปลี่ยน dependency เป็น `openai==2.54.0` และติดตั้งใน `.venv`; คง prompt `course-tutor-v2` และกฎตรวจ citation เดิม บันทึก model/usage จาก OpenAI รองรับ refusal และปฏิเสธคำตอบที่ไม่สมบูรณ์
+- ใช้ timeout 45 วินาที ปิด SDK retries ให้ worker จัดการ ตั้ง `store=False` และเพิ่ม `LLM_MAX_OUTPUT_TOKENS` ค่าเริ่มต้น 4096 รวม reasoning tokens ไม่กำหนดโมเดลเริ่มต้นแทนค่าของผู้ใช้
+- ผลตรวจ: 8 tests ผ่านโดยใช้ OpenAI SDK จริงกับ HTTP จำลอง ครอบคลุม request/schema, citations, refusal, incomplete/empty output, validation, AI ปิด/ไม่มี key/ไม่มีแหล่งข้อมูล และ HTTP 429; API/worker imports, Python syntax, `pip check` และ `git diff --check` ผ่าน ชุดตรวจชั่วคราวอยู่ใน `/tmp/line_api_gpt_checks.py`
+- Railway service `line-api` / production: ตรวจพบการลบ `GEMINI_API_KEY` และเพิ่ม `LLM_API_KEY`, `LLM_MODEL` เป็น staged changes ยังไม่ deploy; connector ปิดบังค่า จึงยังยืนยันชื่อโมเดลและ key จริงไม่ได้ ไม่พบ `AI_ENABLED` ในรายการตัวแปรของบริการนี้
+- ก่อนใช้งาน: นำโค้ดขึ้น GitHub/deploy พร้อม variables และตั้ง `AI_ENABLED=true` เมื่อพร้อมใช้ AI โดย API และ worker ต้องได้รับค่าที่ตรงกัน ยังไม่ได้ push/deploy เปลี่ยน Railway Variables หรือทดสอบเรียก OpenAI/LINE จริง
+- อ้างอิง: [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview อธิบาย PROMPT_VERSION
+
+อัปเดต 29 ตุลาคม 2569: อธิบาย `PROMPT_VERSION = "course-tutor-v2"` ใน `agent/llm.py` ว่าเป็นป้ายระบุรุ่นชุดคำสั่ง AI ที่ผู้พัฒนากำหนดเอง โดย worker บันทึกลง payload ของงาน และระบบตรวจรับมีช่อง `prompt_version` สำหรับบันทึกรุ่นที่ใช้ประเมิน
+
+- ไฟล์ที่แก้ไขในงานนี้: `PREVIEW.md` เท่านั้น
+- หมายเหตุ: การเปลี่ยนค่านี้ไม่ได้เปลี่ยน prompt หรือโมเดลอัตโนมัติ ควรปรับรุ่นเมื่อเปลี่ยนคำสั่ง AI เพื่อให้ติดตามผลย้อนหลังได้
+- ตรวจสอบจากโค้ดปัจจุบันใน `agent/llm.py`, `worker/run.py`, `components/acceptance.py` และ `db/models.py`
+
+## ประวัติ preview ก่อนหน้า
+
+# Preview อธิบายโครงสร้าง components ฝั่ง backend
+
+อัปเดต 29 ตุลาคม 2569: อธิบายเฉพาะ `components/` ที่อยู่นอก `liff/` ตามขอบเขตที่ผู้ใช้ระบุ ครอบคลุมหน้าที่ของ login, line, learning, grading, documents, storage, acceptance และ `__init__.py` พร้อมการลงทะเบียน router ใน `main.py` และความสัมพันธ์กับฐานข้อมูลและ worker
+
+- ไฟล์ที่แก้ไข: `PREVIEW.md` เท่านั้น
+- วิธีอ่านโค้ด: เริ่มจาก `main.py` ที่ลงทะเบียน router แล้วอ่าน `components/login.py` สำหรับ session/สิทธิ์ ก่อนตามไปยังโมดูลของฟีเจอร์ที่สนใจ
+- งาน AI และนำเข้าเอกสารถูกประมวลผลผ่าน `worker/run.py`; ฟังก์ชันเรียก Gemini อยู่ใน `agent/gemini.py`
+- ตรวจสอบจากโค้ดและจุด import โดยไม่ได้รันแอปหรือทดสอบบริการภายนอก
+
+## ประวัติ preview ก่อนหน้า
+
 # Preview บันทึกคำอธิบายโค้ดใน Obsidian
 
 อัปเดต 25 ตุลาคม 2569: เขียนโน้ตภาษาไทยอธิบายสถาปัตยกรรม โครงสร้างไฟล์ ลำดับงานหลัก ฐานข้อมูล LIFF วิธีเริ่มรัน และข้อจำกัดของโปรเจกต์ลงในหมวด `01 Project/line-api` ของ Obsidian vault

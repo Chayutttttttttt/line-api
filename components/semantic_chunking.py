@@ -1,6 +1,6 @@
-"""Topic-aware chunks with source page spans and no extra Gemini calls.
+"""Topic-aware chunks with source page spans and no extra GPT calls.
 
-Gemini labels semantic sections while transcribing each PDF page. This module
+GPT labels semantic sections while transcribing each PDF page. This module
 combines adjacent sections with the same topic across page boundaries, splitting
 oversized sections at paragraph boundaries only as a size safety limit.
 """
