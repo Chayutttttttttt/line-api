@@ -220,12 +220,17 @@ class LineQuizIntegrationTests(unittest.TestCase):
             )
             db.add_all([self.student, self.teacher, school])
             db.flush()
-            self.course = Course(school_id=school.id, title="วิทยาศาสตร์")
+            self.course = Course(
+                school_id=school.id, title="วิทยาศาสตร์",
+                owner_id=self.teacher.id,
+            )
             db.add(self.course)
             for user, role in [
                 (self.student, "student"),
                 (self.teacher, "teacher"),
             ]:
+                user.school_id, user.role = school.id, role
+                db.add(user)
                 db.add(
                     SchoolMembership(
                         user_id=user.id, school_id=school.id, role=role

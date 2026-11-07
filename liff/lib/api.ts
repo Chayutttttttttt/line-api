@@ -6,6 +6,14 @@ const base = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "");
 let token: string | undefined;
 let expiresAt = 0;
 let pendingLogin: Promise<void> | undefined;
+const errorMessages: Record<string, string> = {
+  STUDENT_SCHOOL_REQUIRED: "เพิ่มได้เฉพาะนักเรียนที่ใช้งานอยู่และสังกัดโรงเรียนเดียวกับรายวิชา",
+  ACCOUNT_CHANGED_RELOAD: "ข้อมูลบัญชีถูกแก้ไขแล้ว กรุณาโหลดรายการใหม่ก่อนบันทึกอีกครั้ง",
+  STUDENT_MEMBERSHIP_NOT_FOUND: "ไม่พบนักเรียนในรายวิชานี้ กรุณาโหลดรายการใหม่",
+  COURSE_FORBIDDEN: "คุณไม่มีสิทธิ์เข้าถึงรายวิชานี้ กรุณาตรวจโรงเรียนและบทบาทปัจจุบัน",
+  SCHOOL_TEACHER_REQUIRED: "เฉพาะครูในโรงเรียนนี้เท่านั้นที่สร้างรายวิชาได้",
+  COURSE_ALREADY_EXISTS: "มีชื่อรายวิชานี้ในโรงเรียนแล้ว กรุณาใช้ชื่ออื่น",
+};
 
 export class LineReauthenticationRequired extends Error {
   constructor(message = "เซสชัน LINE หมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง") {
@@ -48,7 +56,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   if (response.status === 401) { token = undefined; expiresAt = 0; }
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(`${error.message ?? "ทำรายการไม่สำเร็จ"}${error.request_id ? ` (${error.request_id})` : ""}`);
+    throw new Error(`${errorMessages[error.code] ?? error.message ?? "ทำรายการไม่สำเร็จ"}${error.request_id ? ` (${error.request_id})` : ""}`);
   }
   if (path.endsWith("/file")) return await response.blob() as T;
   return response.json();

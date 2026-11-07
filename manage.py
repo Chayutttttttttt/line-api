@@ -1,4 +1,5 @@
-"""Trusted operator CLI. No public endpoint can grant a teacher role."""
+"""Trusted operator CLI for bootstrap, enrolment and data operations."""
+
 import argparse
 from uuid import UUID
 
@@ -6,19 +7,35 @@ from fastapi import UploadFile
 from sqlmodel import Session, select
 
 from components.documents import upload_document
+from components.memberships import (
+    add_student,
+    assign_creator,
+    lock_user,
+    set_affiliation,
+)
 from db.database import engine
-from db.models import Course, CourseMembership, LineIdentity, School, SchoolMembership, Topic, User
+from db.models import Course, School, Topic, User
 
 
 def deletion_ledger(db):
     from db.models import AuditEvent
-    rows = db.exec(select(AuditEvent).where(AuditEvent.action.like("data.deleted.%"))).all()
-    return [{"user_id": str(r.actor_id), "scope": r.action.removeprefix("data.deleted."),
-        "request_id": str(r.request_id)} for r in rows]
+
+    rows = db.exec(
+        select(AuditEvent).where(AuditEvent.action.like("data.deleted.%"))
+    ).all()
+    return [
+        {
+            "user_id": str(r.actor_id),
+            "scope": r.action.removeprefix("data.deleted."),
+            "request_id": str(r.request_id),
+        }
+        for r in rows
+    ]
 
 
 def replay_deletions(db, records):
     from components.learning import DeleteRequest, delete_data
+
     count = 0
     for record in records:
         user = db.get(User, UUID(record["user_id"]))
@@ -29,24 +46,14 @@ def replay_deletions(db, records):
 
 
 def add_membership(db, user, course, role):
-    school_member = db.exec(select(SchoolMembership).where(SchoolMembership.user_id == user.id,
-        SchoolMembership.school_id == course.school_id)).first()
-    if not school_member:
-        db.add(SchoolMembership(user_id=user.id, school_id=course.school_id, role=role))
-    elif role in {"teacher", "admin"}:
-        school_member.role, school_member.status = role, "active"
-        db.add(school_member)
-    elif school_member.status != "active":
-        school_member.status = "active"
-        db.add(school_member)
-    db.flush()
-    member = db.exec(select(CourseMembership).where(CourseMembership.user_id == user.id,
-        CourseMembership.course_id == course.id)).first()
-    if member:
-        member.role, member.status = role, "active"
-        db.add(member)
-    else:
-        db.add(CourseMembership(user_id=user.id, school_id=course.school_id, course_id=course.id, role=role))
+    user = lock_user(db, user.id)
+    if role == "student":
+        add_student(db, course, user.id)
+        return
+    if course.owner_id not in {None, user.id}:
+        raise ValueError("Course already belongs to another teacher")
+    set_affiliation(db, user, course.school_id, "teacher")
+    assign_creator(db, course, user)
 
 
 def main():
@@ -59,7 +66,9 @@ def main():
     bootstrap.add_argument("--subject", default="ทั่วไป")
     bootstrap.add_argument("--scope", default="เนื้อหาตามเอกสารที่ครูอนุมัติในรายวิชานี้")
     bootstrap.add_argument("--language", default="ไทย")
-    bootstrap.add_argument("--topic", action="append", default=[], help="Repeat for each initial topic")
+    bootstrap.add_argument(
+        "--topic", action="append", default=[], help="Repeat for each initial topic"
+    )
     member = sub.add_parser("add-member")
     member.add_argument("--user-id", type=UUID, required=True)
     member.add_argument("--course-id", type=UUID, required=True)
@@ -79,9 +88,12 @@ def main():
         if args.command in {"export-deletions", "replay-deletions"}:
             import json
             from pathlib import Path
+
             if args.command == "export-deletions":
                 path = Path(args.output)
-                path.write_text(json.dumps(deletion_ledger(db), ensure_ascii=False, indent=2))
+                path.write_text(
+                    json.dumps(deletion_ledger(db), ensure_ascii=False, indent=2)
+                )
                 path.chmod(0o600)
                 print("Deletion ledger exported; keep it outside the database backup")
             else:
@@ -91,17 +103,30 @@ def main():
         user_id = args.teacher_user_id if args.command == "bootstrap" else args.user_id
         user = db.get(User, user_id)
         if not user or user.status != "active":
-            parser.error("User must sign in with verified LINE login first; use the UUID shown by /me")
+            parser.error(
+                "User must sign in with verified LINE login first; use the UUID shown by /me"
+            )
         if args.command == "bootstrap":
             school = db.exec(select(School).where(School.name == args.school)).first()
             if not school:
                 school = School(name=args.school)
-                db.add(school); db.flush()
-            course = db.exec(select(Course).where(Course.school_id == school.id, Course.title == args.course)).first()
+                db.add(school)
+                db.flush()
+            course = db.exec(
+                select(Course).where(
+                    Course.school_id == school.id, Course.title == args.course
+                )
+            ).first()
             if not course:
-                course = Course(school_id=school.id, title=args.course, subject=args.subject,
-                    learning_scope=args.scope, response_language=args.language)
-                db.add(course); db.flush()
+                course = Course(
+                    school_id=school.id,
+                    title=args.course,
+                    subject=args.subject,
+                    learning_scope=args.scope,
+                    response_language=args.language,
+                )
+                db.add(course)
+                db.flush()
                 for title in dict.fromkeys(args.topic):
                     db.add(Topic(course_id=course.id, title=title))
             add_membership(db, user, course, "teacher")
@@ -116,10 +141,18 @@ def main():
             print("Membership saved")
         else:
             from pathlib import Path
+
             path = Path(args.file)
             with path.open("rb") as file:
-                result = upload_document(course_id=args.course_id, title=args.title,
-                    purpose=args.purpose, document_id=None, file=UploadFile(filename=path.name, file=file), user=user, db=db)
+                result = upload_document(
+                    course_id=args.course_id,
+                    title=args.title,
+                    purpose=args.purpose,
+                    document_id=None,
+                    file=UploadFile(filename=path.name, file=file),
+                    user=user,
+                    db=db,
+                )
             print(result)
 
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import CourseRoster from "./courseRoster";
 
 type Course = { id: string; school_id: string; title: string; subject: string; learning_scope: string; response_language: string; grade_level: string | null; revision: number };
 type Topic = { id: string; title: string; keywords: string[] };
@@ -16,7 +17,7 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [tab, setTab] = useState<"reviews" | "topics" | "course">("reviews");
+  const [tab, setTab] = useState<"reviews" | "topics" | "course" | "students">("reviews");
 
   useEffect(() => {
     let active = true;
@@ -35,15 +36,12 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
     setCourse(c); setTopics(t); setReviews(r);
     await onChanged();
   }
-  function settings(form: FormData) {
-    return { title: value(form, "title"), subject: value(form, "subject"), learning_scope: value(form, "scope"),
-      response_language: value(form, "language"), grade_level: value(form, "grade") || null };
-  }
+
 
   return <div className="space-y-6" aria-busy={busy}>
     <h2 className="pilot-heading">จัดการชั้นเรียน</h2>
-    <nav aria-label="งานของครู" className="grid gap-2 sm:grid-cols-3">
-      {([["reviews","ตรวจคำตอบนักเรียน"],["topics","จัดหัวข้อบทเรียน"],["course","ตั้งค่ารายวิชา"]] as const).map(([id,label]) =>
+    <nav aria-label="งานของครู" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      {([["students","นักเรียนในรายวิชา"],["reviews","ตรวจคำตอบนักเรียน"],["topics","จัดหัวข้อบทเรียน"],["course","ตั้งค่ารายวิชา"]] as const).map(([id,label]) =>
         <button type="button" key={id} className={tab === id ? "pilot-button" : "pilot-secondary"}
           aria-current={tab === id ? "page" : undefined} onClick={() => {setTab(id);setError("");setNotice("");}}>{label}</button>)}
     </nav>
@@ -51,6 +49,7 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
     {notice && <p role="status">{notice}</p>}
     {!course && !error && <p role="status">กำลังโหลดรายวิชา…</p>}
     {course && <>
+      {tab === "students" && <CourseRoster key={courseId} courseId={courseId} onChanged={onChanged} />}
       {tab === "course" && <><form key={course.revision} className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
         await api(`/courses/${courseId}`, { method: "PUT", body: body({ ...settings(form), expected_revision: course.revision }) });
         await refresh(); setNotice("บันทึกขอบเขตแล้ว กรุณาจัดชุดประเมินให้ตรงขอบเขตใหม่ก่อนตรวจรับ");
@@ -60,10 +59,7 @@ export default function CoursePanel({ courseId, onChanged }: { courseId: string;
         <button disabled={busy} className="pilot-button">บันทึกขอบเขตรายวิชา</button>
       </form>
       <details className="rounded-xl border border-border p-4"><summary>เพิ่มรายวิชาในโรงเรียนนี้</summary>
-        <form className="mt-3 space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; void run(async () => {
-          await api("/courses", { method: "POST", body: body({ ...settings(form), school_id: course.school_id }) });
-          await onChanged(); target.reset(); setNotice("สร้างวิชาแล้ว เลือกวิชาใหม่จากเมนูรายวิชา ผู้ดูแลเพิ่มสมาชิกได้ตามเดิม");
-        }); }}><CourseFields /><button disabled={busy} className="pilot-button">สร้างรายวิชา</button></form>
+        <CreateCourseForm schoolId={course.school_id} onCreated={async () => { await onChanged(); }} />
       </details></>}
       {tab === "topics" && <section className="space-y-3"><h3 className="font-semibold">หัวข้อบทเรียนและคำค้นเพิ่มเติม</h3><p className="text-sm">คำค้นช่วยจับคำศัพท์และคำเรียกอื่น เช่น แรง, force แยกด้วยจุลภาค</p>
         {[...topics, { id: "", title: "", keywords: [] }].map((topic) => <form key={`${topic.id}-${course.revision}`} className="space-y-2 rounded-xl border border-border p-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => {
@@ -102,4 +98,47 @@ function CourseFields({ course }: { course?: Course }) {
     <label className="block">ขอบเขตที่ให้สอนและสิ่งที่อยู่นอกขอบเขต<textarea name="scope" required maxLength={4000} rows={4} defaultValue={course?.learning_scope ?? ""} className="pilot-input" /></label>
     <label className="block">ภาษาที่ใช้ตอบ<input name="language" required maxLength={64} defaultValue={course?.response_language ?? "ไทย"} className="pilot-input" /></label>
   </>;
+}
+
+
+function settings(form: FormData) {
+  return {
+    title: value(form, "title"), subject: value(form, "subject"),
+    learning_scope: value(form, "scope"), response_language: value(form, "language"),
+    grade_level: value(form, "grade") || null,
+  };
+}
+
+export function CreateCourseForm({ schoolId, onCreated }: {
+  schoolId: string;
+  onCreated: (id: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  return <form className="mt-3 space-y-3" aria-busy={busy} onSubmit={async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const target = e.currentTarget;
+    const fields = new FormData(target);
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const created = await api<{ id: string }>("/courses", {
+        method: "POST", body: body({ ...settings(fields), school_id: schoolId }),
+      });
+      target.reset();
+      await onCreated(created.id);
+      setNotice("สร้างรายวิชาแล้ว คุณเป็นเจ้าของรายวิชานี้ เลือกวิชาใหม่เพื่อเพิ่มนักเรียนได้เลย");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "สร้างรายวิชาไม่สำเร็จ");
+    } finally {
+      setBusy(false);
+    }
+  }}>
+    {error && <p role="alert" className="text-red-800">{error}</p>}
+    {notice && <p role="status">{notice}</p>}
+    <p className="text-sm text-secondary">คุณจะเป็นเจ้าของรายวิชาที่สร้าง และเพิ่มนักเรียนในโรงเรียนเดียวกันได้</p>
+    <fieldset className="space-y-3" disabled={busy}><CourseFields /></fieldset>
+    <button disabled={busy} className="pilot-button">สร้างรายวิชา</button>
+  </form>;
 }

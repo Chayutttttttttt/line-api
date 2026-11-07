@@ -1,4 +1,5 @@
 """Student tasks, deterministic practice and explicitly activated study plans."""
+
 import hashlib
 from datetime import date, datetime, time, timedelta
 from typing import Literal
@@ -20,6 +21,12 @@ from components.grading import (
     validate_spec,
 )
 from components.login import course_access, current_user, is_global_admin
+from components.memberships import (
+    add_student,
+    assign_creator,
+    lock_user,
+    remove_student,
+)
 from config import MAX_DAILY_AI_REQUESTS
 from db.database import get_session
 from db.models import (
@@ -44,7 +51,6 @@ from db.models import (
     Question,
     Reminder,
     School,
-    SchoolMembership,
     Task,
     Topic,
     User,
@@ -83,26 +89,134 @@ def course_info(course):
 
 
 @router.post("/courses", status_code=201)
-def create_course(data: CourseCreate, user: User = Depends(current_user), db: Session = Depends(get_session)):
-    membership = db.exec(select(SchoolMembership).where(SchoolMembership.school_id == data.school_id,
-        SchoolMembership.user_id == user.id, SchoolMembership.status == "active",
-        SchoolMembership.role.in_(["teacher", "admin"]))).first()
-    if not membership and not is_global_admin(db, user.id):
+def create_course(
+    data: CourseCreate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    user = lock_user(db, user.id)
+    if not is_global_admin(db, user.id) and (
+        user.role != "teacher" or user.school_id != data.school_id
+    ):
         raise HTTPException(403, "SCHOOL_TEACHER_REQUIRED")
     if not db.get(School, data.school_id):
         raise HTTPException(404, "SCHOOL_NOT_FOUND")
+    if db.exec(
+        select(Course.id).where(
+            Course.school_id == data.school_id,
+            Course.title == data.title,
+        )
+    ).first():
+        raise HTTPException(409, "COURSE_ALREADY_EXISTS")
     course = Course(**data.model_dump())
-    db.add(course); db.flush()
-    if membership:
-        db.add(CourseMembership(school_id=course.school_id, course_id=course.id, user_id=user.id, role="teacher"))
+    assign_creator(db, course, user)
     db.add(AuditEvent(actor_id=user.id, action="course.create", object_id=course.id))
     db.commit()
     return course_info(course)
 
 
 @router.get("/courses/{course_id}")
-def get_course(course_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_session)):
+def get_course(
+    course_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
     return course_info(course_access(db, user, course_id))
+
+
+class StudentInput(BaseModel):
+    user_id: UUID
+
+
+@router.get("/courses/{course_id}/students")
+def course_students(
+    course_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    course = course_access(db, user, course_id, teacher=True)
+    query = select(User).where(
+        User.school_id == course.school_id,
+        User.role == "student",
+        User.status.in_(["active", "inactive"]),
+    )
+    if course.owner_id:
+        query = query.where(User.id != course.owner_id)
+    students = db.exec(query.order_by(User.display_name, User.id)).all()
+    enrolled = set(
+        db.exec(
+            select(CourseMembership.user_id).where(
+                CourseMembership.course_id == course_id,
+                CourseMembership.role == "student",
+                CourseMembership.status == "active",
+            )
+        ).all()
+    )
+    records = [
+        {
+            "id": student.id,
+            "display_name": student.display_name,
+            "status": student.status,
+        }
+        for student in students
+    ]
+    owner = db.get(User, course.owner_id) if course.owner_id else None
+    school = db.get(School, course.school_id)
+    return {
+        "school": {"id": school.id, "name": school.name},
+        "owner": {"id": owner.id, "display_name": owner.display_name}
+        if owner
+        else None,
+        "students": [record for record in records if record["id"] in enrolled],
+        "available": [
+            record
+            for record in records
+            if record["id"] not in enrolled and record["status"] == "active"
+        ],
+    }
+
+
+@router.put("/courses/{course_id}/students")
+def enrol_student(
+    course_id: UUID,
+    data: StudentInput,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    course_access(db, user, course_id, teacher=True)
+    # A fixed lock order avoids deadlocks and serializes role/school changes.
+    for account_id in sorted({user.id, data.user_id}, key=str):
+        lock_user(db, account_id)
+    user = db.get(User, user.id)
+    course = course_access(db, user, course_id, teacher=True)
+    add_student(db, course, data.user_id)
+    db.add(
+        AuditEvent(actor_id=user.id, action="course.student.add", object_id=course_id)
+    )
+    db.commit()
+    return {"user_id": data.user_id, "course_id": course_id, "role": "student"}
+
+
+@router.delete("/courses/{course_id}/students/{student_id}")
+def unenrol_student(
+    course_id: UUID,
+    student_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    course_access(db, user, course_id, teacher=True)
+    for account_id in sorted({user.id, student_id}, key=str):
+        lock_user(db, account_id)
+    user = db.get(User, user.id)
+    course = course_access(db, user, course_id, teacher=True)
+    remove_student(db, course, student_id)
+    db.add(
+        AuditEvent(
+            actor_id=user.id, action="course.student.remove", object_id=course_id
+        )
+    )
+    db.commit()
+    return {"removed": True}
 
 
 def lock_course(db, user, course_id, expected_revision):
@@ -152,7 +266,8 @@ def create_topic(course_id: UUID, data: TopicRequest, user: User = Depends(curre
     topic = Topic(course_id=course_id, **data.model_dump(exclude={"expected_revision"}))
     course.revision += 1
     course.evaluation_profile, course.evaluation_overrides = "general", {}
-    db.add_all([course, topic]); db.flush()
+    db.add_all([course, topic])
+    db.flush()
     db.add(AuditEvent(actor_id=user.id, action="topic.create", object_id=topic.id))
     db.commit()
     return {"topic": topic, "course_revision": course.revision}
@@ -184,7 +299,8 @@ def active_course(data: ActiveCourseRequest, user: User = Depends(current_user),
     db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"), {"key": str(user.id)})
     profile = db.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first() or UserProfile(user_id=user.id)
     profile.preferences = {**profile.preferences, "active_course_id": str(data.course_id)}
-    db.add(profile); db.commit()
+    db.add(profile)
+    db.commit()
     return {"course_id": data.course_id}
 
 
@@ -815,6 +931,8 @@ def delete_data(data: DeleteRequest, user: User = Depends(current_user), db: Ses
         for model in (CourseMembership, SchoolMembership):
             db.exec(delete(model).where(model.user_id == user.id))
         user.display_name, user.status = None, "deleted"
+        user.school_id, user.role = None, "student"
+        user.membership_revision += 1
         db.add(user)
     tombstone = AuditEvent(actor_id=user.id, action=f"data.deleted.{data.deletion_scope}")
     db.add(tombstone)

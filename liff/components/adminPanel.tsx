@@ -2,9 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import CourseRoster from "./courseRoster";
 
 type Member = { user_id: string; role: string; status: string };
-type User = { id: string; display_name: string | null; status: string };
+type User = {
+  id: string; display_name: string | null; status: string;
+  school_id: string | null; role: "student" | "teacher";
+  membership_revision: number; is_admin: boolean;
+};
 type School = { id: string; name: string; members: Member[] };
 type Course = { id: string; school_id: string; title: string; subject: string; grade_level: string | null; members: Member[] };
 type Overview = {
@@ -24,6 +29,8 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
   const [notice, setNotice] = useState("");
   const [schoolId, setSchoolId] = useState("");
   const [courseId, setCourseId] = useState("");
+  const [schoolFilter, setSchoolFilter] = useState("all");
+  const [roleFilter, setRoleFilter] = useState("all");
   const [adminTab, setAdminTab] = useState<"schools" | "courses" | "users">("schools");
 
   useEffect(() => {
@@ -59,10 +66,10 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
 
   const selectedSchool = data?.schools.find((school) => school.id === schoolId);
   const selectedCourse = data?.courses.find((course) => course.id === courseId);
-  const userLabel = (id: string) => {
-    const user = data?.users.find((entry) => entry.id === id);
-    return user ? `${user.display_name || "ผู้ใช้"} (${shortId(id)})` : shortId(id);
-  };
+  const filteredUsers = data?.users.filter((user) =>
+    (schoolFilter === "all" || (schoolFilter === "none" ? !user.school_id : user.school_id === schoolFilter)) &&
+    (roleFilter === "all" || user.role === roleFilter)
+  ) ?? [];
 
   return <div className="space-y-8" aria-busy={busy}>
     <div>
@@ -153,37 +160,7 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
         </label>
         {selectedCourse && <div className="space-y-4 rounded-xl border border-border p-4">
           <p className="text-xs text-secondary break-all">Course ID: {selectedCourse.id}</p>
-          <h4 className="font-semibold">เพิ่มหรือแก้สิทธิ์ครู / นักเรียน</h4>
-          <form className="grid gap-3" onSubmit={(e) => {
-            e.preventDefault(); const fields = new FormData(e.currentTarget);
-            void run(() => api("/admin/memberships", {method:"PUT",body:json({
-              user_id:value(fields,"user_id"), course_id:selectedCourse.id, role:value(fields,"role")
-            })}), "บันทึกสิทธิ์สมาชิกแล้ว");
-          }}>
-            <label>บัญชีผู้ใช้ (ต้องเคย Login LINE)
-              <select name="user_id" className="pilot-input mt-1" required defaultValue="">
-                <option value="" disabled>เลือกบัญชีผู้ใช้</option>
-                {data.users.filter((user) => user.status === "active").map((user) =>
-                  <option key={user.id} value={user.id}>{user.display_name || "ผู้ใช้"} · {shortId(user.id)}</option>)}
-              </select>
-            </label>
-            <label>บทบาท
-              <select name="role" className="pilot-input mt-1" defaultValue="student">
-                <option value="student">นักเรียน</option>
-                <option value="teacher">ครู</option>
-              </select>
-            </label>
-            <button disabled={busy} className="pilot-button">บันทึกสิทธิ์</button>
-          </form>
-          <h4 className="font-semibold">สมาชิกปัจจุบัน ({selectedCourse.members.length})</h4>
-          {!selectedCourse.members.length && <p className="text-sm text-secondary">ยังไม่มีสมาชิก</p>}
-          {selectedCourse.members.map((member) => <div key={member.user_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface-soft p-3">
-            <div className="text-sm"><strong>{userLabel(member.user_id)}</strong><p>{member.role} · {member.status}</p></div>
-            <button disabled={busy} className="pilot-secondary" onClick={() => {
-              if (!window.confirm(`ลบ ${userLabel(member.user_id)} ออกจากวิชานี้หรือไม่?`)) return;
-              void run(() => api(`/admin/memberships/${selectedCourse.id}/${member.user_id}`, {method:"DELETE"}), "ลบสมาชิกออกจากรายวิชาแล้ว");
-            }}>เอาออก</button>
-          </div>)}
+          <CourseRoster key={selectedCourse.id} courseId={selectedCourse.id} onChanged={refresh} />
           <p className="text-sm text-secondary">หากต้องการแก้เนื้อหา เอกสารหรือคำตอบ ให้เลือกวิชาจากเมนูด้านบนแล้วเปิด “จัดการวิชา / ตรวจคำตอบ”</p>
           <button disabled={busy} className="pilot-secondary" onClick={() => {
             if (!window.confirm(`ลบวิชา “${selectedCourse.title}” หรือไม่? ลบได้เฉพาะวิชาที่ไม่มีสมาชิกและข้อมูลอ้างอิง`)) return;
@@ -194,23 +171,75 @@ export default function AdminPanel({ onChanged }: { onChanged: () => Promise<voi
       {adminTab === "users" && <section className="space-y-3">
         <h3 className="text-lg font-semibold">บัญชีผู้ใช้</h3>
         <p className="text-sm text-secondary">ผู้ใช้ต้อง Login ผ่าน LINE ก่อนจึงจะปรากฏในรายการนี้ การระงับบัญชีจะยกเลิก Session ที่มีอยู่</p>
-        {data.users.map((user) => <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3">
-          <div className="min-w-0">
-            <strong>{user.display_name || "ไม่มีชื่อแสดง"}</strong>
-            <p className="text-xs text-secondary break-all">{user.id}</p>
-            <p className="text-sm">{user.status}</p>
-          </div>
-          <div className="flex gap-2">
-            <button className="pilot-secondary" onClick={() => { void navigator.clipboard?.writeText(user.id); }}>คัดลอก UUID</button>
-            {user.status === "active" ? <button disabled={busy} className="pilot-secondary" onClick={() => {
-              if (!window.confirm(`ระงับบัญชี ${user.display_name || shortId(user.id)} หรือไม่? ไม่สามารถระงับ Admin ตัวเองได้`)) return;
-              void run(() => api(`/admin/users/${user.id}/status`, {method:"PATCH",body:json({status:"inactive"})}), "ระงับบัญชีแล้ว");
-            }}>ระงับ</button> : <button disabled={busy} className="pilot-secondary" onClick={() => {
-              void run(() => api(`/admin/users/${user.id}/status`, {method:"PATCH",body:json({status:"active"})}), "เปิดบัญชีแล้ว");
-            }}>เปิดบัญชี</button>}
-          </div>
-        </div>)}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label>กรองตามโรงเรียน
+            <select className="pilot-input mt-1" value={schoolFilter} onChange={(e) => setSchoolFilter(e.target.value)}>
+              <option value="all">ทุกโรงเรียน</option><option value="none">ไม่มีสังกัด</option>
+              {data.schools.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}
+            </select>
+          </label>
+          <label>กรองตามบทบาท
+            <select className="pilot-input mt-1" value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+              <option value="all">ทุกบทบาท</option><option value="student">นักเรียน</option><option value="teacher">ครู</option>
+            </select>
+          </label>
+        </div>
+        <p className="text-sm text-secondary">พบ {filteredUsers.length} บัญชี · การเปลี่ยนโรงเรียนหรือบทบาทจะยกเลิกสิทธิ์รายวิชาเดิมที่ไม่ตรงกับข้อมูลใหม่ โดยเก็บประวัติการเรียนไว้</p>
+        {!filteredUsers.length && <p>ไม่พบบัญชีตามตัวกรอง</p>}
+        {filteredUsers.map((user) => <UserAccountRow key={`${user.id}-${user.membership_revision}-${user.status}`}
+          user={user} schools={data.schools} busy={busy} run={run} />)}
       </section>}
     </>}
   </div>;
+}
+
+
+function UserAccountRow({ user, schools, busy, run }: {
+  user: User;
+  schools: School[];
+  busy: boolean;
+  run: (action: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  const [schoolId, setSchoolId] = useState(user.school_id ?? "");
+  const [role, setRole] = useState(user.role);
+  const changed = schoolId !== (user.school_id ?? "") || role !== user.role;
+  const schoolName = schools.find((school) => school.id === user.school_id)?.name ?? "ไม่มีสังกัด";
+  return <article className="space-y-3 rounded-xl border border-border p-4" aria-label={user.display_name || user.id}>
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0">
+        <strong>{user.display_name || "ไม่มีชื่อแสดง"}</strong>
+        {user.is_admin && <span className="ml-2 rounded bg-brand-mint px-2 py-1 text-xs">ผู้ดูแลระบบ</span>}
+        <p className="text-xs text-secondary break-all">{user.id}</p>
+        <p className="mt-1 text-sm">{schoolName} · {user.role === "teacher" ? "ครู" : "นักเรียน"} · {user.status === "active" ? "ใช้งานอยู่" : user.status === "deleted" ? "ลบบัญชีแล้ว" : "ระงับบัญชี"}</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button className="pilot-secondary" onClick={() => { void navigator.clipboard?.writeText(user.id); }}>คัดลอก UUID</button>
+        {user.status !== "deleted" && <button disabled={busy} className="pilot-secondary" onClick={() => {
+          const status = user.status === "active" ? "inactive" : "active";
+          if (status === "inactive" && !window.confirm(`ระงับบัญชี ${user.display_name || shortId(user.id)} หรือไม่?`)) return;
+          void run(() => api(`/admin/users/${user.id}/status`, { method: "PATCH", body: json({ status }) }), status === "active" ? "เปิดบัญชีแล้ว" : "ระงับบัญชีแล้ว");
+        }}>{user.status === "active" ? "ระงับ" : "เปิดบัญชี"}</button>}
+      </div>
+    </div>
+    {user.status !== "deleted" && <form className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" onSubmit={(e) => {
+      e.preventDefault();
+      if (!changed || busy) return;
+      void run(() => api(`/admin/users/${user.id}/affiliation`, {
+        method: "PATCH", body: json({ school_id: schoolId || null, role, expected_revision: user.membership_revision }),
+      }), "บันทึกโรงเรียนและบทบาทแล้ว");
+    }}>
+      <label>โรงเรียนปัจจุบัน
+        <select className="pilot-input mt-1" value={schoolId} disabled={busy} onChange={(e) => setSchoolId(e.target.value)}>
+          <option value="">ไม่มีสังกัด</option>
+          {schools.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}
+        </select>
+      </label>
+      <label>บทบาท
+        <select className="pilot-input mt-1" value={role} disabled={busy} onChange={(e) => setRole(e.target.value as User["role"])}>
+          <option value="student">นักเรียน</option><option value="teacher">ครู</option>
+        </select>
+      </label>
+      <button className="pilot-button" disabled={busy || !changed}>บันทึก</button>
+    </form>}
+  </article>;
 }

@@ -6,11 +6,11 @@ import { api, saveBlob } from "@/lib/api";
 import { getLineChatUrl, initliff, isLineInClient, openLineChat } from "@/lib/liff";
 import { getRequestedDashboardView, type DashboardView } from "@/lib/dashboardView";
 import TeacherPanel from "./teacherPanel";
-import CoursePanel from "./coursePanel";
+import CoursePanel, { CreateCourseForm } from "./coursePanel";
 import AdminPanel from "./adminPanel";
 
 type Course = { id: string; title: string; role: string };
-type Me = { id: string; display_name: string; courses: Course[]; active_course_id: string | null; is_admin: boolean };
+type Me = { id: string; display_name: string; courses: Course[]; active_course_id: string | null; is_admin: boolean; role: "student" | "teacher"; school: { id: string; name: string } | null };
 type Task = { id: string; title: string; state: string; revision: number; due_at: string | null };
 type Plan = { plan: { id: string; state: string; revision: number; end_date: string }; items: { id: string; scheduled_at: string; minutes: number }[] };
 type Progress = { attempts: number; independent_attempts: number; independent_correct: number; with_hints: number; pending_review: number; recommendation: string };
@@ -133,7 +133,13 @@ export default function Dashboard() {
           setMe(await api<Me>("/me")); setNotice("ตั้งวิชาสำหรับเรียนและทำข้อสอบใน LINE เรียบร้อยแล้ว");
         })}>{me.active_course_id === courseId ? "กำลังใช้วิชานี้ใน LINE" : "ใช้วิชานี้ในแชต LINE"}</button>
       </div>}
-      {!me.courses.length && <p className="mt-3 text-sm text-secondary">ยังไม่มีรายวิชา กรุณาติดต่อครูหรือผู้ดูแลเพื่อเพิ่มสมาชิก</p>}
+      <p className="mt-3 text-sm text-secondary">โรงเรียนปัจจุบัน: {me.school?.name ?? "ไม่มีสังกัด"} · {me.role === "teacher" ? "ครู" : "นักเรียน"}</p>
+      {!me.courses.length && (me.role === "teacher" && me.school ? <section className="mt-4 border-t border-border pt-4">
+        <h2 className="font-semibold">สร้างรายวิชาแรกใน {me.school.name}</h2>
+        <CreateCourseForm schoolId={me.school.id} onCreated={async (id) => {
+          setMe(await api<Me>("/me")); setCourseId(id); setView("course");
+        }} />
+      </section> : <p className="mt-3 text-sm text-secondary">ยังไม่มีรายวิชา {me.role === "teacher" ? "ให้ผู้ดูแลกำหนดโรงเรียนในหน้าบัญชีผู้ใช้ก่อนสร้างรายวิชา" : "กรุณาติดต่อครูหรือผู้ดูแลเพื่อกำหนดโรงเรียนและเพิ่มเข้ารายวิชา"}</p>)}
     </div>
     <nav aria-label="หมวดหมู่หลัก" className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
       {menu.map((item) => <button key={item.id} type="button"

@@ -30,6 +30,13 @@ def utc_now() -> datetime:
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("role IN ('student', 'teacher')", name="ck_user_role"),
+    )
+
+    school_id: UUID | None = Field(default=None, foreign_key="schools.id", index=True)
+    role: str = Field(default="student", max_length=32)
+    membership_revision: int = 1
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -217,6 +224,8 @@ class Course(SQLModel, table=True):
     __tablename__ = "courses"
 
     __table_args__ = (UniqueConstraint("id", "school_id", name="uq_course_school"),)
+
+    owner_id: UUID | None = Field(default=None, foreign_key="users.id", index=True)
 
     subject: str = Field(default="ทั่วไป", max_length=255)
     learning_scope: str = ""

@@ -1,6 +1,39 @@
+# โรงเรียนและบทบาทผู้ใช้ พร้อมรายวิชาของครูผู้สร้าง
+
+เสร็จ 7 พฤศจิกายน 2569
+
+- **ผู้ดูแลระบบ → บัญชีผู้ใช้** แสดงโรงเรียนปัจจุบัน/ไม่มีสังกัดและบทบาทครู/นักเรียน แก้ได้ในแต่ละแถว พร้อมตัวกรองโรงเรียนและบทบาท สิทธิ์ผู้ดูแลระบบแยกจากบทบาทนี้
+- **รายวิชา** ผูกเจ้าของกับผู้สร้างอัตโนมัติ ครูสร้างวิชาแรกได้หลังผู้ดูแลกำหนดโรงเรียนและบทบาท หน้าสมาชิกรายวิชาใช้ร่วมกันระหว่างผู้ดูแลกับครูเจ้าของ แสดงเจ้าของและมีเฉพาะปุ่มเพิ่ม/เอานักเรียนออก
+- เพิ่มได้เฉพาะนักเรียนที่เปิดบัญชีและอยู่โรงเรียนเดียวกับวิชา ตรวจทั้ง UI และ API การเอาออกยังคงสังกัดและประวัติเดิม การเปลี่ยนโรงเรียน/บทบาทปิดสิทธิ์ที่ไม่ตรงกับข้อมูลใหม่และยกเลิกข้อสอบ LINE ที่ค้างในวิชาที่เสียสิทธิ์ พร้อมป้องกันการบันทึกข้อมูลบัญชีทับ revision เก่า
+- เพิ่ม migration แบบเขียนเอง `20261107_school_roster` สำหรับ `users.school_id`, `users.role`, `users.membership_revision` และ `courses.owner_id` ดึงข้อมูลเดิมจากสังกัดและประวัติสร้าง หากสังกัดเดิมมีหลายแห่งจะเว้นให้ผู้ดูแลระบุเอง หากไม่ทราบเจ้าของเดิม ผู้ดูแลยังจัดการวิชาได้ ไม่ยกสิทธิ์ให้ครูโดยเดา
+
+**ไฟล์หลัก** `components/admin.py`, `components/memberships.py`, `components/login.py`, `components/learning.py`, `db/models.py`, `alembic/versions/20261107_school_roster.py`, `manage.py`, `liff/components/adminPanel.tsx`, `courseRoster.tsx`, `coursePanel.tsx`, `dashboard.tsx`, `liff/lib/api.ts`, `tests/test_school_roster.py`, `tests/test_line_quiz.py`, `README.md`, `liff/README.md` และ `PREVIEW.md`
+
+**ผลตรวจ** ผ่าน 21/21 tests บน Python 3.12 + PostgreSQL/pgvector แยกจาก production รวม migration upgrade/downgrade/backfill, การตรวจเจ้าของ, บทบาท, โรงเรียน, การถอนสิทธิ์ และ 11 tests ข้อสอบ LINE เดิม ผ่าน Next.js production build/TypeScript, ESLint และ Ruff ชุดตรวจ syntax/import/undefined-name (`E4,E7,E9,F,I`) ตรวจ browser ด้วย React UI จริง → API จริง → PostgreSQL ชั่วคราว ครอบคลุมตัวกรอง การแก้โรงเรียน/บทบาท เพิ่ม/เอานักเรียนออก ครูสร้างวิชาแรก และหน้าจอมือถือ ไม่มี JavaScript errors หรือส่วนล้นแนวนอน จำลองเฉพาะ LINE SDK/การล็อกอินในการตรวจ browser
+
+**ก่อนใช้งานจริง** รัน `python -m db.migrate` แล้วอัปเดต API, worker และ LIFF เป็นโค้ดรุ่นเดียวกัน รอบนี้ยังไม่ได้ deploy หรือเปลี่ยนข้อมูล production ไม่แก้ generated files ทดสอบใน `/tmp` เพราะ virtualenv เดิมอ้าง Python รุ่นก่อนอัปเกรดเครื่อง
+
+## ประวัติ preview ก่อนหน้า
+
+# Deploy LIFF พร้อมบัญชี LINE OA
+
+เสร็จ 7 พฤศจิกายน 2569 เวลา 14:15 น. (Asia/Bangkok)
+
+- Deploy service **liff** ใน Railway **AGENT → production** สำเร็จ สถานะ `SUCCESS` และ Online มี replica ทำงาน 1 ตัว ใช้ commit `03f1c4aea6dffec91c2fd13a42c425a269306034` จาก `main` และ deployment `6dd77232-361f-49b4-b7c3-024e460d8970`
+- Build Next.js/TypeScript และสร้างหน้าเว็บผ่าน ตรวจไฟล์ JavaScript ที่ production ส่งจริงพบ `@137wqdri` ในโมดูลเปิดแชต LINE ยืนยันว่า `NEXT_PUBLIC_LINE_OA_ID` ถูกฝังในเว็บรุ่นนี้แล้ว
+- ตรวจ [LIFF](https://liff-production-9664.up.railway.app/) และ `/login` ได้ HTTP 200 ตรวจ API `/health` ได้ HTTP 200 พร้อม `status: ok` ซึ่งรวมการเชื่อมต่อฐานข้อมูล API และ worker ใช้ commit ล่าสุดนี้อยู่แล้วและมีสถานะ Online
+- ผู้ใช้ปิดแล้วเปิด LIFF ใหม่เพื่อโหลดรุ่นล่าสุด จากนั้นเลือกวิชาและใช้ปุ่ม **ทำข้อสอบใน LINE** การตรวจ production รอบนี้เป็นการอ่านหน้าเว็บ/ไฟล์สาธารณะ/health check ไม่มีการล็อกอินบัญชีผู้เรียนหรือส่งคำตอบ LINE จริง
+- คำสั่งเชื่อมแหล่งโค้ดถูก automatic approval review ปฏิเสธเนื่องจากอาจเปลี่ยนการตั้งค่า source จึงใช้คำสั่ง redeploy ที่ระบุ deployment, service และ environment เดิมจนสำเร็จ ไม่มีงาน deploy ค้าง
+
+ไฟล์โครงการที่อัปเดตรอบนี้มีเฉพาะ `PREVIEW.md` เพื่อบันทึกผล deployment ตรวจ `git diff --check` ผ่าน
+
+## ประวัติ preview ก่อนหน้า
+
 # เรียนและทำข้อสอบผ่าน LINE เป็นหลัก
 
 อัปเดต 7 พฤศจิกายน 2569
+
+**ตั้งค่าบน Railway แล้ว** เพิ่ม `NEXT_PUBLIC_LINE_OA_ID=@137wqdri` ในโปรเจกต์ **AGENT → production → liff** ตามคำขอ ตรวจสอบว่า service ใช้ repository นี้และ Root Directory `/liff` ก่อนเขียน Railway ยืนยันการบันทึกสำเร็จและอ่านกลับพบชื่อตัวแปรแล้ว (OAuth ไม่เปิดเผยค่าให้อ่านกลับ) ตั้ง `skipDeploys=true` จึงยังไม่ได้เริ่ม deploy ใหม่ ค่านี้พร้อมใช้ในการ build/deploy ครั้งถัดไป รอบนี้แก้ไฟล์เฉพาะ `PREVIEW.md` และตรวจ `git diff --check` ไม่มีการเปลี่ยนโค้ดหรือรันทดสอบแอปใหม่
 
 **แหล่งค่าตัวแปร** ใช้ **เบสิค ID (Basic ID)** ของบัญชี LINE Learning จาก LINE Official Account Manager → เลือกบัญชี → **ตั้งค่า → ตั้งค่าบัญชี → ข้อมูลบัญชี → เบสิค ID** คัดลอก ID พร้อม `@` ไปเป็นค่า `NEXT_PUBLIC_LINE_OA_ID` ตรวจตำแหน่งจาก [คู่มือ LINE for Business](https://lineforbusiness.com/th/helpcenter/line-oa/manual/setup) รอบนี้เพิ่มคำอธิบายใน `PREVIEW.md` เท่านั้น ไม่มีการเปลี่ยนค่าบัญชีหรือ deployment และไม่ได้รันทดสอบแอปใหม่
 
