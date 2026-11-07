@@ -4,14 +4,15 @@ Run `python -m worker.run --once` for one tick, omit --once for a Railway worker
 No transaction is kept open during external AI or LINE requests.
 """
 import argparse
-from datetime import timedelta
 import logging
 import time
+from datetime import timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import HTTPException
+from openai import OpenAIError
 from pydantic import ValidationError
 from sqlalchemy import and_, exists, or_
 from sqlalchemy.dialects.postgresql import insert
@@ -19,16 +20,57 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from agent.llm import PROMPT_VERSION, generate_answer
-from components.documents import TEACHING_READY_STATUSES, ingest, search_materials
+from components.documents import (
+    TEACHING_READY_STATUSES,
+    ingest,
+    prepare_chunks,
+    search_materials,
+)
 from components.embeddings import embed_document_batch
-from components.pdf_ai import read_pdf_with_openai
-from components.storage import read_file
+from components.grading import WrittenSubmission, mark_written
+from components.learning import daily_ai_requests, reserve_written_mark
+from components.line import text_messages
+from components.line_quiz import QuizReply, handle_quiz, is_quiz_message
 from components.login import course_access
-from config import (CHANNEL_ACCESS_TOKEN, EMBEDDING_MODEL, EMBEDDINGS_ENABLED, JOB_TIMEOUT_SECONDS, LINE_PROVIDER_ID,
-    MAX_DAILY_AI_REQUESTS, MAX_JOB_ATTEMPTS)
+from components.pdf_ai import read_pdf_with_openai
+from components.quiz_bank import (
+    QUIZ_ORIGIN,
+    generate_quiz,
+    quiz_context,
+    save_quiz,
+)
+from components.storage import read_file
+from config import (
+    CHANNEL_ACCESS_TOKEN,
+    EMBEDDING_MODEL,
+    JOB_TIMEOUT_SECONDS,
+    LINE_PROVIDER_ID,
+    MAX_DAILY_AI_REQUESTS,
+    MAX_JOB_ATTEMPTS,
+)
 from db.database import engine
-from db.models import (AuditEvent, Chunk, Conversation, CourseMembership, Document, DocumentVersion, Job, LearningPlan,
-    LineIdentity, Message, MessageOutbox, PlanItem, Reminder, Task, Topic, User, UserProfile, WebhookEvent, utc_now)
+from db.models import (
+    Chunk,
+    Conversation,
+    Course,
+    CourseMembership,
+    Document,
+    DocumentVersion,
+    Job,
+    LearningPlan,
+    LineIdentity,
+    Message,
+    MessageOutbox,
+    PlanItem,
+    Question,
+    Reminder,
+    Task,
+    Topic,
+    User,
+    UserProfile,
+    WebhookEvent,
+    utc_now,
+)
 
 log = logging.getLogger(__name__)
 
@@ -61,15 +103,176 @@ def claim_job():
 
 
 def create_outbox(db, user_id, key, text, kind="ai", payload=None):
-    statement = insert(MessageOutbox).values(user_id=user_id, kind=kind,
-        payload={"text": text[:4800], **(payload or {})}, state="pending", attempts=0,
-        retry_key=str(uuid4()), logical_message_key=key, created_at=utc_now())
+    statement = insert(MessageOutbox).values(
+        user_id=user_id,
+        kind=kind,
+        payload={
+            "text": text if kind == "line_quiz" else text[:4800],
+            **(payload or {}),
+        },
+        state="pending",
+        attempts=0,
+        retry_key=str(uuid4()),
+        logical_message_key=key,
+        created_at=utc_now(),
+    )
     db.execute(statement.on_conflict_do_nothing(constraint="uq_logical_message"))
+
+
+def refresh_quiz(claim):
+    """Regenerate edited source material or recover a failed generation."""
+    version_id = UUID(claim["payload"]["version_id"])
+    chunk_id = claim["payload"].get("chunk_id")
+    eligible = ("review", "published")
+    with Session(engine, expire_on_commit=False) as db:
+        job = db.get(Job, claim["id"], with_for_update=True)
+        if (
+            job.state != "running"
+            or job.attempts != claim["attempts"]
+            or job.lease_until <= utc_now()
+        ):
+            return
+        version = db.get(DocumentVersion, version_id)
+        sources = []
+        if version and version.status in eligible:
+            document = db.get(Document, version.document_id)
+            if document.purpose == "teaching":
+                course = quiz_context(db.get(Course, document.course_id))
+                query = select(Chunk).where(Chunk.version_id == version_id)
+                if chunk_id:
+                    query = query.where(Chunk.id == UUID(chunk_id))
+                sources = db.exec(query.order_by(Chunk.ordinal)).all()
+        job.lease_until = utc_now() + timedelta(
+            seconds=max(60, JOB_TIMEOUT_SECONDS)
+        )
+        db.commit()
+    drafts = generate_quiz(sources, course) if sources else {}
+    with Session(engine) as db:
+        job = db.exec(
+            select(Job).where(Job.id == claim["id"]).with_for_update()
+        ).one()
+        if (
+            job.state != "running"
+            or job.attempts != claim["attempts"]
+            or job.lease_until <= utc_now()
+        ):
+            return
+        version = db.exec(
+            select(DocumentVersion)
+            .where(DocumentVersion.id == version_id)
+            .with_for_update()
+        ).first()
+        if drafts and version and version.status in eligible:
+            document = db.get(Document, version.document_id)
+            existing = set(
+                db.exec(
+                    select(
+                        Question.rubric["source_chunk_id"].as_string()
+                    ).where(
+                        Question.source_version_id == version_id,
+                        Question.rubric["origin"].as_string() == QUIZ_ORIGIN,
+                    )
+                ).all()
+            )
+            current = []
+            for source in sources:
+                if source.ordinal not in drafts or str(source.id) in existing:
+                    continue
+                chunk = db.get(Chunk, source.id)
+                if chunk and (chunk.text, chunk.topic) == (
+                    source.text,
+                    source.topic,
+                ):
+                    current.append(chunk)
+            if current:
+                save_quiz(db, document, version, current, drafts)
+        job.state, job.updated_at = "done", utc_now()
+        db.commit()
+
+
+def finish_quiz_job(db, job, reply, course):
+    create_outbox(
+        db,
+        job.user_id,
+        f"job:{job.id}",
+        reply.text,
+        kind="line_quiz",
+        payload={
+            "course_id": str(course.id) if course else None,
+            "course_revision": course.revision if course else None,
+            "version_ids": list(dict.fromkeys(map(str, reply.version_ids))),
+            "choices": list(reply.choices),
+        },
+    )
+    job.kind, job.state, job.updated_at = "line_quiz", "done", utc_now()
+    job.payload = {"request_id": job.payload.get("request_id")}
+    event = db.get(WebhookEvent, job.webhook_event_id)
+    event.state = "processed"
+    db.commit()
+
+
+def process_quiz_job(claim, course_id):
+    assessment = None
+    while True:
+        with Session(engine) as db:
+            user = db.get(User, claim["user_id"], with_for_update=True)
+            job = db.get(Job, claim["id"], with_for_update=True)
+            if (
+                not user
+                or user.status != "active"
+                or job.state != "running"
+                or job.attempts != claim["attempts"]
+                or job.lease_until <= utc_now()
+            ):
+                return
+            try:
+                course = course_access(db, user, course_id)
+            except HTTPException:
+                finish_quiz_job(
+                    db,
+                    job,
+                    QuizReply("กรุณาเลือกวิชาที่มีสิทธิ์ใน LIFF อีกครั้ง"),
+                    None,
+                )
+                return
+            reply = handle_quiz(
+                db,
+                user,
+                course,
+                job.payload["text"],
+                job.webhook_event_id,
+                assessment,
+            )
+            if not isinstance(reply, WrittenSubmission):
+                finish_quiz_job(
+                    db,
+                    job,
+                    reply or QuizReply("พิมพ์ “ทำข้อสอบ” เพื่อเริ่มชุดใหม่"),
+                    course,
+                )
+                return
+            if not reserve_written_mark(db, user.id, reply, job.id):
+                finish_quiz_job(
+                    db,
+                    job,
+                    QuizReply("ถึงขีดจำกัด AI วันนี้ กลับมาตอบข้อนี้ได้วันถัดไป"),
+                    course,
+                )
+                return
+            job.lease_until = utc_now() + timedelta(
+                seconds=max(45, JOB_TIMEOUT_SECONDS)
+            )
+            db.commit()
+        # Recheck the lease, learner and source after unlocked inference.
+        assessment = (reply, mark_written(reply))
 
 
 def process_job(claim):
     job_id, attempt = claim["id"], claim["attempts"]
     try:
+        if claim["kind"] == "refresh_quiz":
+            refresh_quiz(claim)
+            return
         if claim["kind"] == "ingest":
             version_id = UUID(claim["payload"]["version_id"])
             with Session(engine, expire_on_commit=False) as db:
@@ -84,6 +287,8 @@ def process_job(claim):
                     return
                 document = db.get(Document, version.document_id)
                 is_pdf = version.filename.lower().endswith(".pdf") and document.purpose == "teaching"
+                if is_pdf:
+                    course = quiz_context(db.get(Course, document.course_id))
                 source_key, checksum = version.storage_key, version.checksum
                 checkpoint = job.payload.get("pdf_checkpoint")
                 version.status = "processing"
@@ -93,6 +298,7 @@ def process_job(claim):
             # GPT receives private PDF bytes outside any SQL transaction.
             # We do not call PdfReader.extract_text() for PDF documents.
             ai_pages = None
+            chunks, drafts, retry_quiz = None, {}, False
             if is_pdf:
                 def renew_lease(page_no: int, total_pages: int):
                     with Session(engine, expire_on_commit=False) as db:
@@ -116,12 +322,25 @@ def process_job(claim):
                         db.commit()
                 ai_pages = read_pdf_with_openai(read_file(source_key, checksum), on_page=renew_lease,
                     checkpoint=checkpoint, on_checkpoint=save_checkpoint)
+                chunks = prepare_chunks(version_id, ai_pages)
+                renew_lease(len(ai_pages), len(ai_pages))
+                try:
+                    drafts = generate_quiz(chunks, course)
+                except (OpenAIError, ValueError) as error:
+                    # A quiz outage must not discard a successfully read PDF.
+                    log.warning("PDF quiz deferred (%s)", type(error).__name__)
+                    retry_quiz = True
             with Session(engine, expire_on_commit=False) as db:
                 job = db.exec(select(Job).where(Job.id == job_id).with_for_update()).one()
                 if (job.state != "running" or job.attempts != attempt
                         or job.lease_until <= utc_now()):
                     return
-                ingest(db, version_id, ai_pages=ai_pages)
+                ingest(db, version_id, ai_pages=ai_pages,
+                       pdf_chunks=chunks, drafts=drafts)
+                if retry_quiz:
+                    db.add(Job(kind="refresh_quiz", payload={
+                        "version_id": str(version_id),
+                    }))
                 # Chunks, review status and checkpoint cleanup commit atomically.
                 job.payload = {k: v for k, v in job.payload.items()
                     if k not in {"pdf_checkpoint", "error_code"}}
@@ -170,7 +389,17 @@ def process_job(claim):
                 selected = claim["payload"].get("course_id")
                 course_id = UUID(selected) if selected else memberships[0].course_id if len(memberships) == 1 else None
                 if course_id:
-                    course = course_access(db, user, course_id)
+                    try:
+                        course = course_access(db, user, course_id)
+                    except HTTPException:
+                        course_id = None
+                if course_id:
+                    if claim["webhook_event_id"] and is_quiz_message(
+                        db, user.id, course_id, claim["payload"]["text"],
+                    ):
+                        db.rollback()
+                        process_quiz_job(claim, course_id)
+                        return
                     course_context = {"id": str(course.id), "title": course.title, "subject": course.subject,
                         "grade_level": course.grade_level, "scope": course.learning_scope,
                         "language": course.response_language, "revision": course.revision,
@@ -188,9 +417,7 @@ def process_job(claim):
                     source_version_id = claim["payload"].get("source_version_id")
                     chunks = search_materials(db, user, course_id, retrieval_query,
                         UUID(source_version_id) if source_version_id else None)
-                    today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
-                    count = len(db.exec(select(Job.id).where(Job.user_id == user.id, Job.kind == "ai_response",
-                        Job.created_at >= today, Job.state.in_(["done", "running"]))).all())
+                    count = daily_ai_requests(db, user.id)
                     if count > MAX_DAILY_AI_REQUESTS:
                         result = {"answer": "ถึงขีดจำกัดคำถาม AI วันนี้แล้ว ยังใช้งานงานและแบบฝึกได้", "citations": []}
                     else:
@@ -263,6 +490,7 @@ def process_job(claim):
             "PDF_AI_MODEL_NOT_CONFIGURED", "PDF_AI_RESPONSE_INCOMPLETE", "PDF_AI_REFUSAL",
             "LLM_MODEL_REQUIRED", "PDF_CHECKPOINT_MISMATCH", "PDF_CHECKPOINT_INVALID",
             "PDF_PAGE_TOO_LONG", "PDF_AI_NO_SEARCHABLE_TEXT", "PDF_AI_TEXT_TOO_LARGE",
+            "QUIZ_AI_RESPONSE_INVALID", "QUIZ_AI_NOT_CONFIGURED",
             "INVALID_PDF", "ENCRYPTED_OR_TOO_MANY_PAGES", "UNSUPPORTED_FILE"}
         code = str(error) if isinstance(error, ValueError) and str(error) in safe_codes else (
             "MODEL_SCHEMA_INVALID" if isinstance(error, ValidationError)
@@ -353,7 +581,17 @@ def schedule_reminders():
 def send_outbox():
     now = utc_now()
     with Session(engine, expire_on_commit=False) as db:
-        outbox = db.exec(select(MessageOutbox).where(or_(
+        older = aliased(MessageOutbox)
+        prior_quiz = exists(select(older.id).where(
+            MessageOutbox.kind == "line_quiz", older.kind == "line_quiz",
+            older.user_id == MessageOutbox.user_id,
+            older.state.in_(["pending", "sending"]),
+            or_(older.created_at < MessageOutbox.created_at, and_(
+                older.created_at == MessageOutbox.created_at,
+                older.id < MessageOutbox.id,
+            )),
+        ))
+        outbox = db.exec(select(MessageOutbox).where(~prior_quiz, or_(
             and_(MessageOutbox.state == "pending", or_(MessageOutbox.next_run_at == None, MessageOutbox.next_run_at <= now)),
             and_(MessageOutbox.state == "sending", MessageOutbox.lease_until <= now)))
             .order_by(MessageOutbox.created_at).with_for_update(skip_locked=True).limit(1)).first()
@@ -403,7 +641,9 @@ def send_outbox():
     try:
         response = requests.post("https://api.line.me/v2/bot/message/push", headers={
             "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}", "X-Line-Retry-Key": claim["retry_key"]},
-            json={"to": recipient, "messages": [{"type": "text", "text": claim["payload"]["text"]}]}, timeout=15)
+            json={"to": recipient, "messages": text_messages(
+                claim["payload"]["text"], claim["payload"].get("choices", []),
+            )}, timeout=15)
         accepted = response.status_code == 200 or (response.status_code == 409 and bool(response.headers.get("x-line-accepted-request-id")))
         retryable = response.status_code == 429 or response.status_code >= 500
         state = "accepted" if accepted else "pending" if retryable else "failed"

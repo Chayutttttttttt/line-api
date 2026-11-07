@@ -10,8 +10,9 @@ const allowedViews: ReadonlySet<string> = new Set(DASHBOARD_VIEWS);
 
 export function getRequestedDashboardView(search: string): DashboardView | null {
   const view = new URLSearchParams(search).get("view");
-  // Old LINE Rich Menu links to ?view=ask now open the homepage; no web AI chat.
-  return view === "ask" ? "home" : view && allowedViews.has(view) ? (view as DashboardView) : null;
+  // Legacy learning links lead to the LINE guide, never a web answer form.
+  if (view === "ask" || view === "practice") return "home";
+  return view && allowedViews.has(view) ? (view as DashboardView) : null;
 }
 
 /** Keep the requested tab through the separate LINE login page. */

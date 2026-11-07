@@ -1,29 +1,52 @@
 """Course-scoped document ingestion, direct source-ID retrieval and private downloads."""
 import hashlib
-import logging
 import io
+import logging
 import re
 import unicodedata
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
-import xml.etree.ElementTree as ET
-import zipfile
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, Field, StrictInt
 from pypdf import PdfReader
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlmodel import Session, select
 
-from components.semantic_chunking import build_semantic_chunks
 from components.embeddings import embed_query
 from components.login import course_access, current_user
-from components.storage import put_file, read_file, delete_file
-from config import EMBEDDINGS_ENABLED, EMBEDDING_MODEL, MAX_UPLOAD_BYTES
+from components.quiz_bank import PENDING_SOURCE, QUIZ_ORIGIN, save_quiz
+from components.semantic_chunking import build_semantic_chunks
+from components.storage import delete_file, put_file, read_file
+from config import EMBEDDING_MODEL, EMBEDDINGS_ENABLED, MAX_UPLOAD_BYTES
 from db.database import get_session
-from db.models import (AcceptanceEvidence, AuditEvent, Chunk, ContentReview, Document,
-    DocumentVersion, Job, Question, Topic, User, utc_now)
+from db.models import (
+    AcceptanceEvidence,
+    Attempt,
+    AuditEvent,
+    Chunk,
+    ContentReview,
+    Document,
+    DocumentVersion,
+    Job,
+    PracticeSessionItem,
+    Question,
+    Topic,
+    User,
+    utc_now,
+)
 
 router = APIRouter(tags=["documents"])
 log = logging.getLogger(__name__)
@@ -92,7 +115,17 @@ def extract_pages(data: bytes, filename: str) -> list[tuple[int, str]]:
     return pages
 
 
-def ingest(db: Session, version_id: UUID, ai_pages: list[tuple] | None = None):
+def prepare_chunks(version_id: UUID, pages: list[tuple]) -> list[Chunk]:
+    return [
+        Chunk(version_id=version_id, ordinal=i, **part)
+        for i, part in enumerate(build_semantic_chunks(pages))
+    ]
+
+
+def ingest(
+    db: Session, version_id: UUID, ai_pages: list[tuple] | None = None,
+    *, pdf_chunks: list[Chunk] | None = None, drafts=None,
+):
     version = db.exec(select(DocumentVersion).where(DocumentVersion.id == version_id).with_for_update()).first()
     if not version or version.status not in {"uploaded", "processing"}:
         return
@@ -114,14 +147,15 @@ def ingest(db: Session, version_id: UUID, ai_pages: list[tuple] | None = None):
     # pages, retaining exact first/last page for reviewable citations.
     blank = [page[0] for page in pages if not page[1].strip() and page[0] is not None]
     warnings = [f"หน้า {page[0]}: {page[3]}" for page in pages if page[3]]
-    prepared = build_semantic_chunks(pages)
+    prepared = pdf_chunks
+    if prepared is None:
+        prepared = prepare_chunks(version_id, pages)
     if not prepared:
         raise ValueError("NO_SEARCHABLE_TEXT")
     db.exec(delete(Chunk).where(Chunk.version_id == version.id))
-    for ordinal, part in enumerate(prepared):
-        db.add(Chunk(version_id=version.id, ordinal=ordinal,
-            page_no=part["page_no"], page_end=part["page_end"],
-            topic=part["topic"], text=part["text"], keywords=part["keywords"]))
+    db.add_all(prepared)
+    if drafts:
+        save_quiz(db, document, version, prepared, drafts)
     messages = ([f"หน้าไม่มีข้อความ: {', '.join(map(str, blank[:30]))}"] if blank else []) + warnings[:20]
     version.extraction_warning = " | ".join(messages)[:4000] or None
     # Mandatory teacher checklist + approval; never auto-publish.
@@ -226,7 +260,9 @@ class ChunkEdit(BaseModel):
 @router.patch("/documents/versions/{version_id}/chunks/{chunk_id}")
 def edit_chunk(version_id: UUID, chunk_id: UUID, data: ChunkEdit,
     user: User = Depends(current_user), db: Session = Depends(get_session)):
-    _, version = version_access(db, user, version_id, teacher=True, lock=True)
+    document, version = version_access(
+        db, user, version_id, teacher=True, lock=True,
+    )
     if version.status != "review" or version.revision != data.expected_revision:
         raise HTTPException(409, "VERSION_CONFLICT")
     chunk = db.get(Chunk, chunk_id)
@@ -234,6 +270,19 @@ def edit_chunk(version_id: UUID, chunk_id: UUID, data: ChunkEdit,
         raise HTTPException(404, "CHUNK_NOT_FOUND")
     if data.page_end is not None and data.page_end < data.page_no:
         raise HTTPException(400, "INVALID_PAGE_RANGE")
+    if (
+        document.purpose == "teaching"
+        and version.filename.lower().endswith(".pdf")
+        and (chunk.text, chunk.topic) != (data.text, data.topic.strip())
+    ):
+        db.exec(delete(Question).where(
+            Question.source_version_id == version.id,
+            Question.status == PENDING_SOURCE,
+            Question.rubric["source_chunk_id"].as_string() == str(chunk.id),
+        ))
+        db.add(Job(kind="refresh_quiz", payload={
+            "version_id": str(version.id), "chunk_id": str(chunk.id),
+        }))
     chunk.text, chunk.page_no, chunk.page_end = data.text, data.page_no, data.page_end or data.page_no
     chunk.topic = data.topic.strip()
     chunk.embedding, chunk.embedding_model = None, None
@@ -312,6 +361,11 @@ def publish_document(document_id: UUID, data: ReviewRequest,
         # Prototype review remains private; only pilot approval unlocks RAG.
         version.status = "published" if data.scope == "pilot" else "review"
         version.approved_by, version.approved_at = user.id, utc_now()
+        if version.status == "published" and document.purpose == "teaching":
+            db.exec(update(Question).where(
+                Question.source_version_id == version.id,
+                Question.status == PENDING_SOURCE,
+            ).values(status="published"))
         if (version.status == "published" and document.purpose == "teaching"
                 and EMBEDDINGS_ENABLED):
             chunks = db.exec(select(Chunk).where(Chunk.version_id == version.id)
@@ -364,10 +418,22 @@ def delete_document_version(version_id: UUID, data: RevisionRequest,
         # A running ingest may already be reading the object outside SQL. Do
         # not remove it until no live worker can create new chunks.
         jobs = db.exec(select(Job).where(
-            Job.kind.in_(["ingest", "embed"]),
+            Job.kind.in_(["ingest", "embed", "refresh_quiz"]),
             Job.payload.contains({"version_id": str(version_id)})).with_for_update()).all()
         if any(job.state in {"queued", "retry", "running"} for job in jobs):
             raise HTTPException(409, "DOCUMENT_JOB_STILL_RUNNING")
+        # Automatic drafts must not prevent deleting an unused PDF. Keep every
+        # served question and attempt, including sessions still in progress.
+        db.exec(delete(Question).where(
+            Question.source_version_id == version_id,
+            Question.rubric["origin"].as_string() == QUIZ_ORIGIN,
+            ~select(PracticeSessionItem.id).where(
+                PracticeSessionItem.question_id == Question.id
+            ).exists(),
+            ~select(Attempt.id).where(
+                Attempt.question_id == Question.id
+            ).exists(),
+        ))
         if db.exec(select(Question.id).where(Question.source_version_id == version_id).limit(1)).first():
             raise HTTPException(409, "DOCUMENT_USED_BY_QUESTIONS")
         if db.exec(select(AcceptanceEvidence.id).where(
@@ -397,7 +463,7 @@ def delete_document_version(version_id: UUID, data: RevisionRequest,
     chunk_count = db.exec(delete(Chunk).where(Chunk.version_id == version_id)).rowcount
     review_count = db.exec(delete(ContentReview).where(ContentReview.version_id == version_id)).rowcount
     job_count = db.exec(delete(Job).where(
-        Job.kind.in_(["ingest", "embed"]),
+        Job.kind.in_(["ingest", "embed", "refresh_quiz"]),
         Job.payload.contains({"version_id": str(version_id)}))).rowcount
     db.delete(version)
     db.flush()

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, saveBlob } from "@/lib/api";
-import { initliff } from "@/lib/liff";
+import { getLineChatUrl, initliff, isLineInClient, openLineChat } from "@/lib/liff";
 import { getRequestedDashboardView, type DashboardView } from "@/lib/dashboardView";
 import TeacherPanel from "./teacherPanel";
 import CoursePanel from "./coursePanel";
@@ -12,13 +12,11 @@ import AdminPanel from "./adminPanel";
 type Course = { id: string; title: string; role: string };
 type Me = { id: string; display_name: string; courses: Course[]; active_course_id: string | null; is_admin: boolean };
 type Task = { id: string; title: string; state: string; revision: number; due_at: string | null };
-type Topic = { id: string; title: string };
-type Practice = { session_id: string; question: { id: string; prompt: string; answer_type: string; answer_config: { options?: {id: string; text: string}[]; unit?: string; criteria?: string } } };
 type Plan = { plan: { id: string; state: string; revision: number; end_date: string }; items: { id: string; scheduled_at: string; minutes: number }[] };
 type Progress = { attempts: number; independent_attempts: number; independent_correct: number; with_hints: number; pending_review: number; recommendation: string };
 type Preferences = { reminders_enabled: boolean; quiet_start: number; quiet_end: number };
 type View = DashboardView;
-type Group = "home" | "learning" | "planning" | "teacher" | "settings" | "admin";
+type Group = "home" | "teacher" | "settings" | "admin";
 const dateTime = (value: string) => new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(value));
 const field = (form: FormData, name: string) => String(form.get(name) ?? "");
 const json = (value: unknown) => JSON.stringify(value);
@@ -32,13 +30,10 @@ export default function Dashboard() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [topics, setTopics] = useState<Topic[]>([]);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [preferences, setPreferences] = useState<Preferences | null>(null);
-  const [practice, setPractice] = useState<Practice | null>(null);
-  const [submissionId, setSubmissionId] = useState("");
-  const [feedback, setFeedback] = useState("");
+  const [inLine, setInLine] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -47,6 +42,7 @@ export default function Dashboard() {
         // LINE carries Rich Menu parameters in liff.state until init resolves.
         await initliff();
         if (!active) return;
+        setInLine(isLineInClient());
         const requested = getRequestedDashboardView(window.location.search);
         setRequestedView(requested);
         const user = await api<Me>("/me");
@@ -70,10 +66,22 @@ export default function Dashboard() {
   useEffect(() => {
     if (!me) return;
     let active = true;
-    Promise.all([api<Task[]>("/tasks"), api<Plan[]>("/plans"), api<Preferences>("/me/preferences"), courseId ? api<Topic[]>(`/topics?course_id=${courseId}`) : Promise.resolve([])])
-      .then(([nextTasks, nextPlans, nextPreferences, nextTopics]) => { if (active) { setTasks(nextTasks); setPlans(nextPlans); setPreferences(nextPreferences); setTopics(nextTopics); } })
-      .catch((e: Error) => { if (active) setError(e.message); });
-    if (courseId) api<Progress>(`/progress?course_id=${courseId}`).then((value) => { if (active) setProgress(value); }).catch((e: Error) => { if (active) setError(e.message); });
+    const loadView = async () => {
+      if (view === "tasks") {
+        const value = await api<Task[]>("/tasks");
+        if (active) setTasks(value);
+      } else if (view === "plans") {
+        const value = await api<Plan[]>("/plans");
+        if (active) setPlans(value);
+      } else if (view === "settings") {
+        const value = await api<Preferences>("/me/preferences");
+        if (active) setPreferences(value);
+      } else if (view === "progress" && courseId) {
+        const value = await api<Progress>(`/progress?course_id=${courseId}`);
+        if (active) setProgress(value);
+      }
+    };
+    void loadView().catch((e: Error) => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [me, courseId, view]);
 
@@ -84,22 +92,17 @@ export default function Dashboard() {
 
   const course = me?.courses.find((c) => c.id === courseId);
   const teacher = course?.role === "teacher" || course?.role === "admin";
-  const group: Group = view === "home" || view === "ask" ? "home"
-    : view === "practice" || view === "progress" || (view === "documents" && !teacher) ? "learning"
-    : view === "tasks" || view === "plans" ? "planning"
+  const group: Group = view === "home" || view === "ask" || view === "practice" ? "home"
     : view === "course" || view === "acceptance" || (view === "documents" && teacher) ? "teacher"
     : view === "admin" ? "admin" : "settings";
-  const subviews: [View, string][] = group === "learning"
-    ? [["practice", "ฝึกทำโจทย์"], ["progress", "ผลการเรียน"], ...(!teacher ? [["documents", "เอกสารบทเรียน"] as [View, string]] : [])]
-    : group === "planning" ? [["tasks", "งานที่ต้องทำ"], ["plans", "แผนอ่านสอบ"]]
+  const subviews: [View, string][] = group === "settings"
+    ? [["settings", "บัญชีและการแจ้งเตือน"], ["tasks", "จัดการงาน"], ["plans", "ตั้งแผนอ่านสอบ"], ["progress", "ประวัติการเรียน"], ...(!teacher ? [["documents", "เอกสารบทเรียน"] as [View, string]] : [])]
     : group === "teacher" ? [["documents", "ไฟล์และแบบฝึก"], ["course", "รายวิชาและตรวจคำตอบ"], ["acceptance", "ตรวจรับระบบ"]]
     : [];
   const menu: { id: Group; label: string; subtitle: string; target: View }[] = [
-    {id:"home",label:"หน้าแรก",subtitle:"เริ่มต้นใช้งาน",target:"home"},
-    {id:"learning",label:"การเรียน",subtitle:"ฝึกและดูผล",target:"practice"},
-    {id:"planning",label:"งานและแผน",subtitle:"งานและการสอบ",target:"tasks"},
+    {id:"home",label:"เรียนผ่าน LINE",subtitle:"ทำข้อสอบและขอคำใบ้",target:"home"},
+    {id:"settings",label:"ตั้งค่าการใช้งาน",subtitle:"บัญชีและการแจ้งเตือน",target:"settings"},
     ...(teacher ? [{id:"teacher" as Group,label:"สำหรับครู",subtitle:"จัดการชั้นเรียน",target:"documents" as View}] : []),
-    {id:"settings",label:"ตั้งค่า",subtitle:"การแจ้งเตือน",target:"settings"},
     ...(me?.is_admin ? [{id:"admin" as Group,label:"ผู้ดูแลระบบ",subtitle:"จัดการสมาชิก",target:"admin" as View}] : []),
   ];
 
@@ -109,14 +112,14 @@ export default function Dashboard() {
     <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
       <div><p className="text-sm font-medium text-secondary">LINE Learning</p>
         <h1 className="text-2xl font-bold text-brand-navy">สวัสดี {me.display_name || "ผู้เรียน"}</h1>
-        <p className="mt-1 text-sm text-secondary">จัดการการเรียนได้ที่นี่ · ถาม AI ผ่านแชต LINE</p>
+        <p className="mt-1 text-sm text-secondary">ตั้งค่าบัญชีและรายวิชาที่นี่ · เรียนและทำข้อสอบในแชต LINE</p>
       </div>
       <Link href="/login" className="pilot-secondary text-sm">บัญชี LINE</Link>
     </header>
     <div className="mb-5 rounded-2xl border border-border bg-white p-4 sm:p-5">
       <label className="block font-semibold">รายวิชาที่กำลังใช้
         <select className="pilot-input mt-2" value={courseId} disabled={busy} onChange={(e) => {
-          setCourseId(e.target.value); setView("home"); setPractice(null); setFeedback("");
+          setCourseId(e.target.value); setView("home");
           setProgress(null); setError(""); setNotice("");
         }}>
           <option value="">เลือกรายวิชา</option>
@@ -124,15 +127,15 @@ export default function Dashboard() {
         </select>
       </label>
       {courseId && <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-secondary">AI ใน LINE ใช้วิชา: <strong>{me.courses.find((c) => c.id === me.active_course_id)?.title ?? "ยังไม่ได้เลือก"}</strong></p>
+        <p className="text-sm text-secondary">แชตและข้อสอบใน LINE ใช้วิชา: <strong>{me.courses.find((c) => c.id === me.active_course_id)?.title ?? "ยังไม่ได้เลือก"}</strong></p>
         <button className="pilot-secondary text-sm" disabled={busy || me.active_course_id === courseId} onClick={() => void run(async () => {
           await api("/me/active-course", { method:"PUT", body:json({course_id:courseId}) });
-          setMe(await api<Me>("/me")); setNotice("ตั้งวิชาสำหรับถาม AI ใน LINE เรียบร้อยแล้ว");
+          setMe(await api<Me>("/me")); setNotice("ตั้งวิชาสำหรับเรียนและทำข้อสอบใน LINE เรียบร้อยแล้ว");
         })}>{me.active_course_id === courseId ? "กำลังใช้วิชานี้ใน LINE" : "ใช้วิชานี้ในแชต LINE"}</button>
       </div>}
       {!me.courses.length && <p className="mt-3 text-sm text-secondary">ยังไม่มีรายวิชา กรุณาติดต่อครูหรือผู้ดูแลเพื่อเพิ่มสมาชิก</p>}
     </div>
-    <nav aria-label="หมวดหมู่หลัก" className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+    <nav aria-label="หมวดหมู่หลัก" className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
       {menu.map((item) => <button key={item.id} type="button"
         aria-current={group === item.id ? "page" : undefined}
         onClick={() => {setView(item.target);setError("");setNotice("");}}
@@ -150,22 +153,18 @@ export default function Dashboard() {
     {error && <p role="alert" className="mb-4 rounded-xl border border-danger p-3 text-red-800">{error}</p>}
     {notice && <p role="status" className="mb-4 rounded-xl bg-brand-mint p-3">{notice}</p>}
     <section className="rounded-2xl border border-border bg-surface p-5 shadow-sm" aria-busy={busy}>
-      {(view === "home" || view === "ask") && <div className="space-y-5">
-        <section className="rounded-2xl bg-brand-mint/40 p-5">
-          <h2 className="text-xl font-bold text-brand-navy">ถาม AI ในแชต LINE</h2>
-          <p className="mt-2">กลับไปที่แชต LINE Learning แล้วพิมพ์คำถามได้เลย AI จะใช้รายวิชาที่คุณตั้งไว้</p>
-          <p className="mt-2 text-sm text-secondary">ตัวอย่าง “อธิบายกฎของนิวตันข้อที่ 2” · การถาม AI ใช้ใน LINE เท่านั้น</p>
-          {!me.active_course_id && !!courseId && <p className="mt-3 font-medium">กด “ใช้วิชานี้ในแชต LINE” ด้านบนก่อนถาม</p>}
-        </section>
-        <h2 className="text-lg font-bold">เมนูที่ใช้บ่อย</h2>
+      {(view === "home" || view === "ask" || view === "practice") && <div className="space-y-5">
+        <LineLearningGuide
+          ready={!!courseId && me.active_course_id === courseId}
+          busy={busy}
+          inLine={inLine}
+          onOpen={(message) => { void run(async () => openLineChat(message)); }}
+        />
+        <h2 className="text-lg font-bold">บัญชีและการตั้งค่า</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {([
-            ["practice", "ฝึกทำโจทย์", "เลือกหัวข้อและลองทำด้วยตัวเอง"],
-            ["tasks", "งานที่ต้องทำ", `ยังไม่เสร็จ ${tasks.filter((task) => task.state === "pending").length} งาน`],
-            ["plans", "แผนอ่านสอบ", "วางเวลาอ่านหนังสือ"],
-            ["progress", "ผลการเรียน", `ฝึกไปแล้ว ${progress?.attempts ?? 0} ครั้ง`],
-            ["documents", teacher ? "ไฟล์สอนและโจทย์" : "เอกสารบทเรียน", teacher ? "เพิ่มไฟล์และแบบฝึกหัด" : "เปิดเอกสารที่ครูให้"],
-            ...(teacher ? [["course", "งานของครู", "ตรวจคำตอบและจัดรายวิชา"]] : []),
+            ["settings", "บัญชีและการแจ้งเตือน", "ตั้งเวลาเตือนและจัดการข้อมูลส่วนตัว"],
+            ...(teacher ? [["documents", "ไฟล์สอนและโจทย์", "อัปโหลดและอนุมัติเอกสาร"], ["course", "งานของครู", "ตรวจคำตอบและจัดรายวิชา"]] : []),
           ] as [View, string, string][]).map(([id, title, desc]) => <button key={id} type="button"
             onClick={() => {setView(id); setError(""); setNotice("");}}
             className="rounded-2xl border border-border bg-white p-4 text-left hover:border-brand-blue focus-visible:outline-2 focus-visible:outline-brand-blue">
@@ -175,7 +174,6 @@ export default function Dashboard() {
         </div>
       </div>}
       {view === "tasks" && <><h2 className="pilot-heading">งานของฉัน</h2><form className="mb-5 grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; void run(async () => { const due = field(form, "due"); await api("/tasks", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: json({ title: field(form, "title"), due_at: due ? new Date(due).toISOString() : null, course_id: courseId || null }) }); setTasks(await api<Task[]>("/tasks")); target.reset(); }); }}><label>ชื่องาน<input className="pilot-input" name="title" required maxLength={255} /></label><label>กำหนดส่ง (เวลาบนอุปกรณ์)<input className="pilot-input" name="due" type="datetime-local" /></label><button disabled={busy} className="pilot-button sm:col-span-2">บันทึกงาน</button></form><ul className="space-y-3">{tasks.map((task) => <li key={task.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3"><div><strong>{task.title}</strong><p className="text-sm text-secondary">{task.due_at ? dateTime(task.due_at) : "ไม่มีกำหนดส่ง"} · {task.state}</p></div>{task.state === "pending" && <button disabled={busy} className="pilot-secondary" onClick={() => void run(async () => { await api(`/tasks/${task.id}`, { method: "PATCH", body: json({ expected_revision: task.revision, state: "done" }) }); setTasks(await api<Task[]>("/tasks")); })}>ทำเสร็จแล้ว</button>}</li>)}</ul>{!tasks.length && <p>ยังไม่มีงาน</p>}</>}
-      {view === "practice" && <><h2 className="pilot-heading">ลองทำโจทย์ด้วยตัวเอง</h2><form className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { const result = await api<Practice>("/practice/sessions", { method: "POST", body: json({ course_id: courseId, topic_id: field(form, "topic") }) }); setPractice(result); setSubmissionId(crypto.randomUUID()); setFeedback(""); }); }}><label>หัวข้อ<select required name="topic" className="pilot-input">{topics.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}</select></label><button disabled={busy || !courseId || !topics.length} className="pilot-button">รับโจทย์ใหม่</button></form>{practice && <div key={practice.session_id} className="mt-5"><p className="mb-4 text-lg">{practice.question.prompt}</p><form className="space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { const result = await api<{correct: boolean | null; score_status: string; explanation: string; hints_used: number}>(`/practice/${practice.session_id}/answers`, { method: "POST", body: json({ question_id: practice.question.id, answer: field(form, "answer"), submission_id: submissionId }) }); setFeedback(`${result.score_status === "pending_review" ? "ส่งคำตอบแล้ว รอครูตรวจ" : result.correct ? "ถูกต้อง" : "ลองทบทวนอีกครั้ง"} · ${result.hints_used ? "ใช้คำใบ้" : "ทำเอง"}\n${result.explanation}`); setProgress(await api<Progress>(`/progress?course_id=${courseId}`)); }); }}><PracticeAnswer question={practice.question} /><button className="pilot-button" disabled={busy}>ส่งคำตอบ</button><button type="button" disabled={busy} className="pilot-secondary ml-2" onClick={() => void run(async () => { const result = await api<{hint: string}>(`/practice/${practice.session_id}/hint`, { method: "POST" }); setFeedback(`คำใบ้: ${result.hint}`); })}>ขอคำใบ้</button></form></div>}{feedback && <p role="status" className="mt-4 whitespace-pre-wrap rounded-xl bg-surface-soft p-4">{feedback}</p>}</>}
       {view === "plans" && <><h2 className="pilot-heading">ร่างแผนอ่านสอบ</h2><form className="mb-5 space-y-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { await api("/plans/draft", { method: "POST", body: json({ course_id: courseId, exam_date: field(form, "exam"), minutes_per_day: Number(field(form, "minutes")) }) }); setPlans(await api<Plan[]>("/plans")); }); }}><label className="block">วันสอบที่ยืนยันแล้ว<input type="date" name="exam" required className="pilot-input" /></label><label className="block">นาทีต่อวัน<input type="number" name="minutes" min={5} max={120} defaultValue={20} required className="pilot-input" /></label><p className="text-sm text-secondary">เสนอเวลาอ่าน 18:00 น. ตามเขตเวลาบัญชี ตรวจวันจริงก่อนเปิดแผน</p><button className="pilot-button" disabled={busy || !courseId}>สร้างแผนร่าง</button></form>{plans.map(({plan, items}) => <article key={plan.id} className="mb-4 rounded-xl border border-border p-4"><h3 className="font-semibold">สอบ {plan.end_date} · {plan.state}</h3><ul className="my-3 max-h-52 overflow-auto text-sm">{items.map((item) => <li className="py-1" key={item.id}>{dateTime(item.scheduled_at)} · {item.minutes} นาที</li>)}</ul>{plan.state === "draft" && <button disabled={busy} className="pilot-button" onClick={() => void run(async () => { await api(`/plans/${plan.id}/activate`, { method: "POST", body: json({ expected_revision: plan.revision }) }); setPlans(await api<Plan[]>("/plans")); })}>ยืนยันวันและเปิดแผน</button>}{plan.state !== "cancelled" && <button disabled={busy} className="pilot-secondary ml-2" onClick={() => void run(async () => { await api(`/plans/${plan.id}/cancel`, { method: "POST", body: json({ expected_revision: plan.revision }) }); setPlans(await api<Plan[]>("/plans")); })}>ยกเลิกแผน</button>}</article>)}</>}
       {view === "progress" && <><h2 className="pilot-heading">ความก้าวหน้าของฉัน</h2>{progress ? <><dl className="grid grid-cols-2 gap-3">{[["ฝึกทั้งหมด", progress.attempts], ["ทำเอง", progress.independent_attempts], ["ทำเองถูก", progress.independent_correct], ["ใช้คำใบ้", progress.with_hints], ["รอครูตรวจ", progress.pending_review]].map(([label, value]) => <div key={label} className="rounded-xl bg-surface-soft p-4"><dt>{label}</dt><dd className="text-3xl font-bold text-brand-navy">{value}</dd></div>)}</dl><p className="mt-4">{progress.recommendation}</p></> : <p>เลือกรายวิชาเพื่อดูผล</p>}{courseId && <PracticeResults key={courseId} courseId={courseId} />}</>}
       {view === "admin" && me.is_admin && <AdminPanel onChanged={async () => { setMe(await api<Me>("/me")); }} />}
@@ -185,6 +183,39 @@ export default function Dashboard() {
       {view === "settings" && <><h2 className="pilot-heading">ตั้งค่าการแจ้งเตือน</h2><p className="mb-4 text-sm text-secondary">เลือกว่าจะรับการแจ้งเตือนงานและแผนอ่านสอบผ่าน LINE หรือไม่</p><form key={JSON.stringify(preferences)} className="space-y-4" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); void run(async () => { setPreferences(await api<Preferences>("/me/preferences", { method: "PUT", body: json({ reminders_enabled: form.has("enabled"), quiet_start: Number(field(form, "start")), quiet_end: Number(field(form, "end")) }) })); setNotice("บันทึกการตั้งค่าแล้ว ใช้กับงานและแผนที่สร้างหรือเปิดใช้หลังจากนี้"); }); }}><label className="flex gap-3"><input type="checkbox" name="enabled" defaultChecked={preferences?.reminders_enabled ?? false} /> เปิดการเตือนผ่าน LINE โดยสมัครใจ</label><label className="block">เวลาเงียบเริ่ม (ชั่วโมง)<input className="pilot-input" name="start" type="number" min={0} max={23} defaultValue={preferences?.quiet_start ?? 21} /></label><label className="block">สิ้นสุด (ชั่วโมง)<input className="pilot-input" name="end" type="number" min={0} max={23} defaultValue={preferences?.quiet_end ?? 7} /></label><button className="pilot-button" disabled={busy || !preferences}>บันทึกการตั้งค่า</button></form><details className="mt-6 rounded-xl border border-border p-4"><summary className="cursor-pointer font-semibold">ข้อมูลบัญชีและความเป็นส่วนตัว</summary><p className="mt-3 break-all text-xs text-secondary">รหัสบัญชีสำหรับแจ้งผู้ดูแล: {me.id}</p><p className="mt-3 text-sm text-secondary">เก็บบัญชี LINE ผลฝึก งาน และประวัติที่จำเป็นตามนโยบายโรงเรียน ติดต่อครูเพื่อถอนตัวจากนำร่อง</p><button className="pilot-secondary mt-3" disabled={busy} onClick={() => { if (window.confirm("ลบประวัติสนทนาของคุณจากระบบปัจจุบันหรือไม่?")) void run(async () => { await api("/me/data", { method: "DELETE", body: json({ deletion_scope: "conversations" }) }); setNotice("ลบประวัติสนทนาแล้ว"); }); }}>ลบประวัติสนทนาใน LINE AI</button></details></>}
     </section>
   </main>;
+}
+
+function LineLearningGuide({ ready, busy, inLine, onOpen }: {
+  ready: boolean;
+  busy: boolean;
+  inLine: boolean;
+  onOpen: (message?: string) => void;
+}) {
+  const chatConfigured = !!getLineChatUrl();
+  return <section className="rounded-2xl bg-brand-mint/40 p-5">
+    <h2 className="text-xl font-bold text-brand-navy">ทำข้อสอบ ตอบคำถาม และขอคำใบ้ใน LINE</h2>
+    <p className="mt-2">เปิดแชตส่วนตัวกับ LINE Learning แล้วพิมพ์ <strong>ทำข้อสอบ</strong> เพื่อเริ่มหรือทำชุดเดิมต่อ</p>
+    {!ready && <p role="status" className="mt-4 font-medium">เลือกรายวิชาและกด “ใช้วิชานี้ในแชต LINE” ด้านบนก่อนเริ่มสอบ</p>}
+    {chatConfigured ? <>
+      <div className="mt-4 flex flex-wrap gap-3">
+        <button type="button" className="pilot-button" disabled={busy || !ready} onClick={() => onOpen("ทำข้อสอบ")}>ทำข้อสอบใน LINE</button>
+        <button type="button" className="pilot-secondary" disabled={busy} onClick={() => onOpen()}>เปิดแชต LINE Learning</button>
+      </div>
+      <p className="mt-2 text-sm text-secondary">ปุ่มทำข้อสอบจะเปิดแชตพร้อมข้อความ “ทำข้อสอบ” ให้คุณกดส่งใน LINE</p>
+    </> : <>
+      {inLine && <button type="button" className="pilot-button mt-4" disabled={busy} onClick={() => onOpen()}>กลับไปที่ LINE</button>}
+      <p className="mt-2 text-sm text-secondary">{inLine ? "กลับไปเปิด" : "เปิดแอป LINE แล้วเลือก"}แชต LINE Learning แล้วส่งข้อความ “ทำข้อสอบ”</p>
+    </>}
+    <details className="mt-4 border-t border-border pt-4">
+      <summary className="cursor-pointer font-semibold">วิธีตอบคำถามและขอคำใบ้ในแชต</summary>
+      <ol className="mt-3 list-decimal space-y-2 pl-5">
+        <li>ระบบส่งโจทย์ทีละข้อ แตะตัวเลือกหรือพิมพ์คำตอบในแชต</li>
+        <li>ถ้าต้องการความช่วยเหลือ แตะปุ่ม <strong>คำใบ้</strong> หรือพิมพ์ <strong>ขอคำใบ้</strong> แล้วตอบข้อเดิมต่อได้</li>
+        <li>เมื่อจบชุด ระบบส่งคะแนนและหัวข้อที่ควรทบทวนในแชต พิมพ์ <strong>ผลสอบ</strong> เพื่อดูอีกครั้ง</li>
+      </ol>
+      <p className="mt-3 text-sm text-secondary">พิมพ์ “ยกเลิกสอบ” เพื่อออกจากชุดที่กำลังทำ แล้วถามบทเรียนกับ AI ต่อในแชตได้</p>
+    </details>
+  </section>;
 }
 
 function StudentMaterials({ courseId }: { courseId: string }) {
@@ -199,13 +230,6 @@ function StudentMaterials({ courseId }: { courseId: string }) {
 }
 
 
-function PracticeAnswer({ question }: { question: Practice["question"] }) {
-  const config = question.answer_config;
-  if (question.answer_type === "multiple_choice") return <label className="block">คำตอบ<select name="answer" required className="pilot-input" defaultValue=""><option value="" disabled>เลือกคำตอบ</option>{config.options?.map((o) => <option key={o.id} value={o.id}>{o.text}</option>)}</select></label>;
-  if (question.answer_type === "boolean") return <label className="block">คำตอบ<select name="answer" required className="pilot-input" defaultValue=""><option value="" disabled>เลือกคำตอบ</option><option value="true">จริง / ใช่</option><option value="false">เท็จ / ไม่ใช่</option></select></label>;
-  if (question.answer_type === "manual") return <><p>เกณฑ์: {config.criteria}</p><label className="block">คำตอบอธิบาย<textarea name="answer" required maxLength={2000} rows={6} className="pilot-input" /></label><p className="text-sm">ครูจะตรวจและให้ข้อเสนอแนะ ดูผลได้ในหน้าความก้าวหน้า</p></>;
-  return <label className="block">คำตอบ{config.unit ? ` (หน่วย ${config.unit})` : ""}<input name="answer" required maxLength={2000} className="pilot-input" placeholder={question.answer_type === "integer_set" ? "{-2, 0, 3}" : question.answer_type === "numeric" ? "กรอกเฉพาะตัวเลขตามหน่วยที่กำหนด" : "คำตอบสั้น"} /></label>;
-}
 
 type PracticeResult = { id: string; prompt: string; answer: string; result: { score_status: string; score: number | null; explanation: string; feedback?: string } };
 function PracticeResults({ courseId }: { courseId: string }) {

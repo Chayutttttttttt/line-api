@@ -1,23 +1,56 @@
 """Student tasks, deterministic practice and explicitly activated study plans."""
-from datetime import date, datetime, time, timedelta
 import hashlib
-import json
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
-from sqlalchemy import delete, text
+from sqlalchemy import delete, func, text
 from sqlmodel import Session, select
 
 from components.documents import RevisionRequest
-from components.grading import AnswerType, grade, student_answer_config, validate_spec
+from components.grading import (
+    AnswerType,
+    WrittenSubmission,
+    grade,
+    mark_written,
+    student_answer_config,
+    validate_spec,
+)
 from components.login import course_access, current_user, is_global_admin
+from config import MAX_DAILY_AI_REQUESTS
 from db.database import get_session
-from db.models import (Attempt, AuditEvent, AuthSession, Conversation, DocumentVersion, FeedbackReport,
-    Course, CourseMembership, School, SchoolMembership, IdempotencyRecord, Job, LearningPlan, LineIdentity, Message, MessageOutbox, PlanItem,
-    PracticeSession, PracticeSessionItem, Question, Reminder, Task, Topic, User, UserProfile, utc_now)
+from db.models import (
+    Attempt,
+    AuditEvent,
+    AuthSession,
+    Conversation,
+    Course,
+    CourseMembership,
+    Document,
+    DocumentVersion,
+    FeedbackReport,
+    IdempotencyRecord,
+    Job,
+    LearningPlan,
+    LineIdentity,
+    Message,
+    MessageOutbox,
+    PlanItem,
+    PracticeSession,
+    PracticeSessionItem,
+    Question,
+    Reminder,
+    School,
+    SchoolMembership,
+    Task,
+    Topic,
+    User,
+    UserProfile,
+    utc_now,
+)
 
 router = APIRouter(tags=["learning"])
 
@@ -305,7 +338,11 @@ def create_question(data: QuestionRequest, user: User = Depends(current_user), d
         raise HTTPException(404, "TOPIC_NOT_FOUND")
     course_access(db, user, topic.course_id, True)
     from components.documents import version_access
-    document, _ = version_access(db, user, data.source_version_id, True)
+    document, source = version_access(
+        db, user, data.source_version_id, teacher=True, lock=True,
+    )
+    if source.status == "deleting":
+        raise HTTPException(409, "VERSION_CONFLICT")
     if document.course_id != topic.course_id or document.purpose != "teaching":
         raise HTTPException(403, "QUESTION_SOURCE_MISMATCH")
     validate_spec(data.answer_type, data.grading_spec)
@@ -349,17 +386,55 @@ class PracticeRequest(BaseModel):
     topic_id: UUID
 
 
+def published_questions(course_id: UUID):
+    return (
+        select(Question)
+        .join(Topic, Topic.id == Question.topic_id)
+        .join(
+            DocumentVersion, DocumentVersion.id == Question.source_version_id
+        )
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .where(
+            Topic.course_id == course_id,
+            Document.course_id == course_id,
+            Document.purpose == "teaching",
+            DocumentVersion.status == "published",
+            Question.status == "published",
+        )
+    )
+
+
+def practice_source(db, practice, item, question):
+    if question.version != item.question_version:
+        raise HTTPException(409, "QUESTION_VERSION_CHANGED")
+    source = db.exec(
+        select(DocumentVersion)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .where(
+            DocumentVersion.id == question.source_version_id,
+            DocumentVersion.status == "published",
+            Document.course_id == practice.course_id,
+            Document.purpose == "teaching",
+        )
+        .with_for_update(read=True, of=DocumentVersion)
+    ).first()
+    if not source or question.status != "published":
+        raise HTTPException(409, "SOURCE_WITHDRAWN")
+    return source
+
+
 @router.post("/practice/sessions", status_code=201)
 def start_practice(data: PracticeRequest, user: User = Depends(current_user), db: Session = Depends(get_session)):
     course_access(db, user, data.course_id)
     topic = db.get(Topic, data.topic_id)
     if not topic or topic.course_id != data.course_id:
         raise HTTPException(404, "TOPIC_NOT_FOUND")
-    rows = db.exec(select(Question).join(DocumentVersion, Question.source_version_id == DocumentVersion.id)
-        .where(Question.topic_id == data.topic_id, Question.status == "published", DocumentVersion.status == "published")
-        .order_by(Question.created_at)).all()
-    attempted = {a.question_id for a in db.exec(select(Attempt).where(Attempt.user_id == user.id)).all()}
-    question = next((q for q in rows if q.id not in attempted), None)
+    attempted = select(Attempt.question_id).where(Attempt.user_id == user.id)
+    question = db.exec(
+        published_questions(data.course_id)
+        .where(Question.topic_id == topic.id, Question.id.not_in(attempted))
+        .order_by(Question.created_at, Question.id).limit(1)
+    ).first()
     if not question:
         raise HTTPException(404, "NO_NEW_APPROVED_QUESTION")
     practice = PracticeSession(user_id=user.id, course_id=data.course_id)
@@ -380,9 +455,7 @@ def hint(session_id: UUID, user: User = Depends(current_user), db: Session = Dep
         raise HTTPException(409, "SESSION_CLOSED")
     item = db.exec(select(PracticeSessionItem).where(PracticeSessionItem.session_id == session_id)).first()
     question = db.get(Question, item.question_id)
-    source = db.get(DocumentVersion, question.source_version_id)
-    if not source or source.status != "published":
-        raise HTTPException(409, "SOURCE_WITHDRAWN")
+    practice_source(db, practice, item, question)
     item.hints_used = 1  # One hint in this pilot; repeated reads do not inflate the count.
     db.add(item)
     db.commit()
@@ -395,38 +468,162 @@ class AnswerRequest(BaseModel):
     submission_id: UUID
 
 
-@router.post("/practice/{session_id}/answers")
-def answer(session_id: UUID, data: AnswerRequest, user: User = Depends(current_user), db: Session = Depends(get_session)):
+def daily_ai_requests(db, user_id, exclude_job=None):
+    today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    tutor = select(func.count(Job.id)).where(
+        Job.user_id == user_id,
+        Job.kind == "ai_response",
+        Job.created_at >= today,
+        Job.state.in_(["done", "running"]),
+    )
+    if exclude_job is not None:
+        tutor = tutor.where(Job.id != exclude_job)
+    markings = select(func.count(AuditEvent.id)).where(
+        AuditEvent.actor_id == user_id,
+        AuditEvent.action == "quiz.grade_ai",
+        AuditEvent.created_at >= today,
+    )
+    total = tutor.scalar_subquery() + markings.scalar_subquery()
+    return db.exec(select(total)).one()
+
+
+def reserve_written_mark(db, user_id, work, exclude_job=None):
+    """Serialize paid marks per learner, including calls that later fail."""
+    user = db.get(User, user_id, with_for_update=True, populate_existing=True)
+    if not user or user.status != "active":
+        raise HTTPException(403, "ACCOUNT_INACTIVE")
+    if daily_ai_requests(db, user_id, exclude_job) >= MAX_DAILY_AI_REQUESTS:
+        return False
+    db.add(
+        AuditEvent(
+            actor_id=user_id,
+            action="quiz.grade_ai",
+            object_id=work.question_id,
+        )
+    )
+    return True
+
+
+def record_answer(
+    db,
+    practice,
+    item,
+    question,
+    answer_text,
+    submission_id,
+    *,
+    assessment=None,
+):
+    """Stage one attempt. The caller commits it with the session transition."""
+    if question.answer_type == "written":
+        if not answer_text.strip():
+            raise HTTPException(400, "ANSWER_REQUIRED")
+        work = WrittenSubmission.from_question(
+            practice.id, question, answer_text
+        )
+        if assessment is None:
+            return work
+        assessed_work, mark = assessment
+        if assessed_work != work:
+            raise HTTPException(409, "QUESTION_VERSION_CHANGED")
+        if mark is None:
+            raise HTTPException(503, "WRITTEN_GRADING_UNAVAILABLE")
+        if mark.correct is None:
+            raise HTTPException(422, "WRITTEN_MARK_UNCERTAIN")
+        correct = mark.correct
+        explanation = f"{mark.feedback}\nแนวคำตอบ: {question.explanation}"
+    else:
+        correct = grade(
+            question.answer_type, question.grading_spec, answer_text
+        )
+        explanation = (
+            "รอครูตรวจคำตอบ" if correct is None else question.explanation
+        )
+    status = "pending_review" if correct is None else "graded"
+    result = {
+        "correct": correct,
+        "score": None if correct is None else int(correct),
+        "score_status": status,
+        "hints_used": item.hints_used,
+        "explanation": explanation,
+        "source_version_id": str(question.source_version_id),
+        "question_version": item.question_version,
+    }
+    db.add(
+        Attempt(
+            user_id=practice.user_id,
+            session_id=practice.id,
+            question_id=question.id,
+            question_version=item.question_version,
+            submission_id=submission_id,
+            answer={"text": answer_text, "result": result},
+            score=int(bool(correct)),
+            score_status=status,
+            hints_used=item.hints_used,
+        )
+    )
+    return result
+
+
+def submit_practice(db, user, session_id, data, assessment=None):
     practice = owned(db, PracticeSession, session_id, user, lock=True)
     course_access(db, user, practice.course_id)
-    previous = db.exec(select(Attempt).where(Attempt.user_id == user.id, Attempt.submission_id == data.submission_id)).first()
+    previous = db.exec(
+        select(Attempt).where(
+            Attempt.user_id == user.id,
+            Attempt.submission_id == data.submission_id,
+        )
+    ).first()
     if previous:
-        if previous.session_id != session_id or previous.question_id != data.question_id or previous.answer["text"] != data.answer:
+        if (
+            previous.session_id != session_id
+            or previous.question_id != data.question_id
+            or previous.answer["text"] != data.answer
+        ):
             raise HTTPException(409, "SUBMISSION_PAYLOAD_MISMATCH")
         return previous.answer["result"]
     if practice.state != "active":
         raise HTTPException(409, "SESSION_CLOSED")
-    item = db.exec(select(PracticeSessionItem).where(PracticeSessionItem.session_id == session_id,
-        PracticeSessionItem.question_id == data.question_id)).first()
+    item = db.exec(
+        select(PracticeSessionItem).where(
+            PracticeSessionItem.session_id == session_id,
+            PracticeSessionItem.question_id == data.question_id,
+        )
+    ).first()
     if not item:
         raise HTTPException(403, "QUESTION_NOT_SERVED")
     question = db.get(Question, item.question_id)
-    if question.version != item.question_version:
-        raise HTTPException(409, "QUESTION_VERSION_CHANGED")
-    source = db.get(DocumentVersion, question.source_version_id)
-    if not source or source.status != "published":
-        raise HTTPException(409, "SOURCE_WITHDRAWN")
-    correct = grade(question.answer_type, question.grading_spec, data.answer)
-    score_status = "pending_review" if correct is None else "graded"
-    result = {"correct": correct, "score": None if correct is None else int(correct), "score_status": score_status,
-        "hints_used": item.hints_used, "explanation": "รอครูตรวจคำตอบ" if correct is None else question.explanation,
-        "source_version_id": question.source_version_id, "question_version": item.question_version}
-    db.add(Attempt(user_id=user.id, session_id=session_id, question_id=question.id,
-        question_version=item.question_version, submission_id=data.submission_id,
-        answer={"text": data.answer, "result": result | {"source_version_id": str(question.source_version_id)}},
-        score=int(bool(correct)), score_status=score_status, hints_used=item.hints_used))
-    practice.state = "completed"
-    db.add(practice)
+    practice_source(db, practice, item, question)
+    result = record_answer(
+        db,
+        practice,
+        item,
+        question,
+        data.answer,
+        data.submission_id,
+        assessment=assessment,
+    )
+    if not isinstance(result, WrittenSubmission):
+        practice.state = "completed"
+    return result
+
+
+@router.post("/practice/{session_id}/answers")
+def answer(
+    session_id: UUID,
+    data: AnswerRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    result = submit_practice(db, user, session_id, data)
+    if isinstance(result, WrittenSubmission):
+        # Release row locks and recheck ownership, source and version after AI.
+        db.rollback()
+        if not reserve_written_mark(db, user.id, result):
+            raise HTTPException(429, "DAILY_AI_LIMIT_REACHED")
+        db.commit()
+        assessment = (result, mark_written(result))
+        result = submit_practice(db, user, session_id, data, assessment)
     db.commit()
     return result
 
@@ -596,7 +793,9 @@ def delete_data(data: DeleteRequest, user: User = Depends(current_user), db: Ses
     db.exec(delete(FeedbackReport).where(FeedbackReport.reporter_id == user.id))
     db.exec(delete(Message).where(Message.owner_id == user.id))
     db.exec(delete(Conversation).where(Conversation.owner_id == user.id))
-    for job in db.exec(select(Job).where(Job.user_id == user.id, Job.kind == "ai_response")).all():
+    for job in db.exec(select(Job).where(
+        Job.user_id == user.id, Job.kind.in_(["ai_response", "line_quiz"]),
+    )).all():
         job.state, job.payload = "cancelled", {}
         db.add(job)
     db.exec(delete(MessageOutbox).where(MessageOutbox.user_id == user.id))

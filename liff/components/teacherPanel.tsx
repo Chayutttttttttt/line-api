@@ -106,11 +106,11 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
     {error && <p role="alert" className="rounded-xl border border-danger p-3 text-red-800">{error}</p>}
     {message && <p role="status" className="rounded-xl bg-brand-mint p-3 break-all">{message}</p>}
     {mode === "documents" && <>
-      <p className="text-sm text-secondary">AI จะอ่าน PDF แล้วให้ครูตรวจข้อความ เลขหน้า และคำสำคัญก่อนอนุมัติ ไฟล์ที่ยังไม่ผ่านการตรวจจะไม่ถูกนำไปตอบใน LINE</p>
+      <p className="text-sm text-secondary">AI จะอ่าน PDF บทเรียนและเตรียมข้อสอบให้ เมื่อครูตรวจข้อความและอนุมัติ PDF สำหรับกลุ่มนำร่อง นักเรียนจะทำข้อสอบในแชต LINE ได้</p>
       {documentTab === "upload" && <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const target = e.currentTarget; form.set("course_id", courseId);
         if (!value(form, "document_id")) form.delete("document_id");
         if (!value(form, "topic_id")) form.delete("topic_id");
-        void run(async () => { const uploaded = await api<{ingestion_job_id: string; version_id: string}>("/documents", { method: "POST", body: form }); setMessage("รับไฟล์แล้ว AI กำลังอ่านเอกสาร โปรดเปิด ‘ดูและแก้ไฟล์’ เพื่อตรวจและอนุมัติเมื่ออ่านเสร็จ"); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
+        void run(async () => { await api("/documents", { method: "POST", body: form }); setMessage("รับไฟล์แล้ว AI กำลังอ่านเอกสาร โปรดเปิด ‘ดูและแก้ไฟล์’ เพื่อตรวจและอนุมัติเมื่ออ่านเสร็จ"); target.reset(); setUploadDocId(""); setUploadPurpose("teaching"); setUploadType("lesson"); setUploadTopic(""); await refresh(); }); }}>
         <label>ชื่อเอกสาร<input name="title" required maxLength={255} className="pilot-input" /></label>
         <label>การใช้เอกสาร<select name="purpose" className="pilot-input" value={uploadPurpose} onChange={(e) => { setUploadPurpose(e.target.value); if (e.target.value === "evidence") setUploadTopic(""); }}><option value="teaching">เอกสารสอน (ใช้ตอบ AI)</option><option value="evidence">หลักฐานและเอกสารโครงการ (ไม่ใช้ตอบ AI)</option></select></label>
         {uploadPurpose === "teaching" && <>
@@ -202,11 +202,11 @@ export default function TeacherPanel({ courseId, mode }: { courseId: string; mod
         <h3 className="font-semibold">ประวัติผลตรวจ</h3>{detail.reviews.map((r) => <p key={r.id} className="rounded-xl bg-surface-soft p-3 text-sm break-all">{r.decision} · {r.scope} · {new Date(r.created_at).toLocaleString("th-TH")}<br />ผู้ตรวจ {r.reviewer_id}<br />{r.notes}<br />คะแนน 0–2: {Object.entries(r.rubric).map(([key, score]) => `${key} ${score}`).join(" · ")}</p>)}
       </article>}</>}
       {documentTab === "questions" && <section className="rounded-xl border border-border p-4">
-        <h3 className="text-lg font-semibold">สร้างโจทย์และเฉลย</h3>
-        <p className="mt-1 text-sm text-secondary">เลือกหัวข้อ ใส่โจทย์และคำตอบ แล้วกดรับรองโจทย์ก่อนให้นักเรียนฝึก</p><QuestionForm topics={topics} versions={versions} busy={busy} onSave={(data) => run(async () => {
+        <h3 className="text-lg font-semibold">คลังโจทย์รายวิชา</h3>
+        <p className="mt-1 text-sm text-secondary">AI เตรียมโจทย์ระหว่างแบ่ง PDF บทเรียนเป็นส่วนย่อย ข้อสอบจะพร้อมใช้ใน LINE เมื่ออนุมัติ PDF สำหรับกลุ่มนำร่อง หากต้องการเพิ่มโจทย์เอง ใช้แบบฟอร์มด้านล่าง</p><QuestionForm topics={topics} versions={versions} busy={busy} onSave={(data) => run(async () => {
         await api("/questions", { method: "POST", body: JSON.stringify(data) });
         setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); setMessage("สร้างโจทย์ร่างแล้ว ตรวจเฉลยก่อนอนุมัติ");
-      })} /><ul className="mt-4 space-y-3">{questions.map((q) => <li key={q.id} className="rounded-xl bg-surface-soft p-3">{q.prompt} · {q.status}{q.status === "draft" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => { await api(`/questions/${q.id}/publish`, { method: "POST" }); setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); })}>รับรองโจทย์และเฉลย</button>}</li>)}</ul></section>}
+      })} /><ul className="mt-4 space-y-3">{questions.map((q) => <li key={q.id} className="rounded-xl bg-surface-soft p-3">{q.prompt} · {q.status === "awaiting_source" ? "รออนุมัติเอกสาร" : q.status === "published" ? "เผยแพร่แล้ว" : q.status}{q.status === "draft" && <button className="pilot-secondary ml-2" disabled={busy} onClick={() => void run(async () => { await api(`/questions/${q.id}/publish`, { method: "POST" }); setQuestions(await api<Question[]>(`/questions?course_id=${courseId}`)); })}>รับรองโจทย์และเฉลย</button>}</li>)}</ul></section>}
     </>}
     {mode === "acceptance" && <>
       <p className="text-sm text-secondary">บันทึกผลจริงพร้อมรุ่นโปรแกรม ทุกกรณีเริ่มเป็น “ยังไม่ทดสอบ” ต้องตรวจโดยครูและโรงเรียนก่อนเริ่มนำร่อง</p>

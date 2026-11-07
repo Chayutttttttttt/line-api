@@ -48,3 +48,24 @@ export function isLineLoggedIn() {
 export function isLineInClient() {
   return liff.isInClient();
 }
+
+export function getLineChatUrl(message = ""): string | null {
+  const account = process.env.NEXT_PUBLIC_LINE_OA_ID?.trim();
+  if (!account) return null;
+  const id = account.startsWith("@") ? account : `@${account}`;
+  const url = `https://line.me/R/oaMessage/${encodeURIComponent(id)}`;
+  return message ? `${url}/?${encodeURIComponent(message)}` : url;
+}
+
+/** Open the official account with an optional draft; the user sends it in LINE. */
+export function openLineChat(message = "") {
+  const url = getLineChatUrl(message);
+  if (url) {
+    if (liff.isInClient()) liff.openWindow({ url, external: true });
+    else window.location.assign(url);
+  } else if (liff.isInClient()) {
+    liff.closeWindow();
+  } else {
+    throw new Error("เปิดแชต LINE Learning ในแอป LINE แล้วพิมพ์ ทำข้อสอบ");
+  }
+}

@@ -30,7 +30,10 @@ export default function LoginCard() {
         <p className="mt-3 text-base leading-relaxed text-secondary">
           เข้าสู่ระบบด้วยบัญชี LINE ของคุณ
           <br />
-          เพื่อเชื่อมต่อและเริ่มใช้งาน
+          เพื่อเลือกรายวิชาและตั้งค่าการใช้งาน
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-secondary">
+          ทำข้อสอบ ส่งคำตอบ ขอคำใบ้ และถามบทเรียนในแชต LINE Learning
         </p>
 
         <div className="mt-8">

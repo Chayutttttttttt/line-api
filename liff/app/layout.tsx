@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ผู้ช่วยเรียน | LINE",
-  description: "เรียนและฝึกทุกวิชาจากเอกสารที่ครูอนุมัติ พร้อมหลักฐานตรวจรับก่อนนำร่อง",
+  description: "เข้าสู่ระบบและตั้งค่ารายวิชา เพื่อทำข้อสอบ ขอคำใบ้ และถามบทเรียนในแชต LINE",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

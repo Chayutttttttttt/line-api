@@ -123,7 +123,7 @@ export default function LineLoginButton() {
         )}
         <span>{label}</span>
       </button>
-      {status === "success" && <Link href={dashboardHref} className="mt-4 block text-center font-semibold text-brand-blue underline">เปิดผู้ช่วยเรียน</Link>}
+      {status === "success" && <Link href={dashboardHref} className="mt-4 block text-center font-semibold text-brand-blue underline">เลือกรายวิชาและตั้งค่า</Link>}
       <p className="sr-only" role="status">{label}</p>
       {["expired", "reopen", "error"].includes(status) && (
         <p id={messageId} role="alert" className="mt-3 rounded-xl border border-danger/25 bg-[#FFF5F5] p-3 text-sm leading-relaxed text-[#A52D2D]">

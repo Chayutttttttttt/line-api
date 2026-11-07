@@ -16,6 +16,34 @@ from db.models import Job, LineIdentity, UserProfile, WebhookEvent, utc_now
 router = APIRouter(tags=["line"])
 
 
+def text_messages(text: str, choices=()) -> list[dict]:
+    """Split long legacy questions at LINE's UTF-16 text limit."""
+    messages = []
+    start = units = 0
+    for index, char in enumerate(text):
+        width = 2 if ord(char) > 0xFFFF else 1
+        if units + width > 5000:
+            messages.append({"type": "text", "text": text[start:index]})
+            start, units = index, 0
+        units += width
+    messages.append({"type": "text", "text": text[start:]})
+    if choices:
+        messages[-1]["quickReply"] = {
+            "items": [
+                {
+                    "type": "action",
+                    "action": {
+                        "type": "message",
+                        "label": value,
+                        "text": value,
+                    },
+                }
+                for value in choices
+            ]
+        }
+    return messages
+
+
 def verify_signature(body: bytes, signature: str):
     if not CHANNEL_SECRET or not LINE_CHANNEL_ID or not LINE_PROVIDER_ID:
         raise HTTPException(503, "LINE_WEBHOOK_NOT_CONFIGURED")
