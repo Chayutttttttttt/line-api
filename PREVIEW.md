@@ -1,3 +1,19 @@
+# ติดตั้ง Python virtual environment
+
+วันที่ 8 พฤศจิกายน 2569
+
+- สร้าง `.venv/` ด้วย Python 3.14.8 และติดตั้ง pip ภายใน environment
+- ติดตั้งแพ็กเกจจาก `requirements.txt` เดิมครบแล้ว; `.gitignore` มี `.venv` อยู่แล้ว
+- ไฟล์ที่ได้รับผล: `.venv/` (ไม่เก็บใน Git) และ `PREVIEW.md`
+- เปิดใช้งานจากโฟลเดอร์โปรเจกต์: `source .venv/bin/activate`
+- ออกจาก environment: `deactivate`
+- ติดตั้งแพ็กเกจซ้ำภายหลัง: `python -m pip install -r requirements.txt` หลัง activate
+- เครื่องนี้ไม่มี ensurepip จึงสร้างด้วย `python3 -m venv --without-pip .venv` และติดตั้ง pip ด้วย get-pip.py จาก bootstrap.pypa.io
+
+- ตรวจสอบผ่าน: activate ใช้ Python ภายใน `.venv`, `pip check`, import dependencies ทั้ง 14 รายการ และ `git diff --check`
+
+## ประวัติ preview ก่อนหน้า
+
 # สำรองโครงการลง GitHub
 
 วันที่ 7 พฤศจิกายน 2569 เวลา 15:31 น. (Asia/Bangkok)
